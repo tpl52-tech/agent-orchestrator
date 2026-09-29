@@ -22,10 +22,21 @@ const SUBCOMMANDS = [
 ] as const;
 
 export async function main(argv: string[]): Promise<void> {
-  const [sub] = argv;
+  const [sub, ...rest] = argv;
+
+  // `ao attach <sessionId>` — convenience for Milestone 1 (attach is normally via the TUI).
+  if (sub === "attach") {
+    const sessionId = rest[0];
+    if (!sessionId) throw new Error("usage: ao attach <sessionId>");
+    const { attach } = await import("../client/attach.ts");
+    await attach(sessionId);
+    return;
+  }
+
   if (sub && (SUBCOMMANDS as readonly string[]).includes(sub)) {
     throw new Error(`ao ${sub}: not implemented — see BUILD.md (design §18)`);
   }
+
   // no/unknown subcommand -> TUI
   const { main: tui } = await import("../client/index.tsx");
   await tui();

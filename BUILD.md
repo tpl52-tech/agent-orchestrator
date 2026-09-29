@@ -6,10 +6,13 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
 
 ## Build order
 
-- [ ] **1. Foundation.** Daemon + SQLite + UDS binary framing + one local `claude` PTY +
-      attach/detach + terminal reset. (Tasks/sessions, 256 KB replay buffer, double-Ctrl-B
-      detach chord.) — `src/daemon/{index,store,pty,uds-server,session-manager}.ts`,
-      `src/shared/wire.ts`, `src/client/{index,attach}.tsx`.
+- [x] **1. Foundation.** Daemon + SQLite + UDS binary framing + one local PTY + attach/detach +
+      terminal reset. (Tasks/sessions, 256 KB replay buffer, double-Ctrl-B detach chord.) —
+      `src/daemon/{index,store,pty,uds-server,session-manager}.ts`, `src/shared/{wire,paths}.ts`,
+      `src/client/{index,attach,daemon-client}.tsx`. Covered by `bun test` (framing, store, PTY,
+      end-to-end daemon↔client). The client dashboard is intentionally minimal here; the rich TUI
+      (status glyphs, PR rows, focus view, full keymap) is step 2, and the per-CLI spawn spec /
+      worktrees are step 3 — the session manager currently uses a placeholder argv.
 - [ ] **2. Status.** Status state machine with claude hooks, idle timer, stuck ceiling;
       dashboard with stable (human-order) rows. — `src/daemon/monitors/status.ts`,
       `src/client/dashboard.tsx`.

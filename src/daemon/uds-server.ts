@@ -158,6 +158,7 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
         return { ok: true };
       case "session.remove":
         manager.kill(p.sessionId);
+        manager.forget(p.sessionId);
         store.removeSession(p.sessionId);
         return { ok: true };
       case "session.interrupt":

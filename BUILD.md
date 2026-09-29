@@ -13,9 +13,14 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       end-to-end daemon↔client). The client dashboard is intentionally minimal here; the rich TUI
       (status glyphs, PR rows, focus view, full keymap) is step 2, and the per-CLI spawn spec /
       worktrees are step 3 — the session manager currently uses a placeholder argv.
-- [ ] **2. Status.** Status state machine with claude hooks, idle timer, stuck ceiling;
-      dashboard with stable (human-order) rows. — `src/daemon/monitors/status.ts`,
-      `src/client/dashboard.tsx`.
+- [x] **2. Status.** Seven-state status machine (hooks + idle timer + 60-min stuck ceiling), a local
+      notify hook (`src/daemon/hook-notify.ts`) + events.log poll-watcher, and a dashboard with stable
+      human-order rows, status glyphs, task rollup, and live `session.status` updates. —
+      `src/daemon/monitors/status.ts`, `src/shared/status.ts`, `src/client/index.tsx`. Covered by
+      `bun test` (machine transitions, hook watcher, presentation helpers, hook script, and a
+      daemon-level working→exited broadcast). Deferred: the CONFIDENT stuck via transcript-growth (8-min
+      no-progress) — wired but fed only once transcript reading lands (step 11). PR rows / usage / quota
+      cells and the focus view come with steps 5+.
 - [ ] **3. Spawning.** Worktrees, per-CLI spawn spec, ticket seed expansion, settings. —
       `src/daemon/worktree.ts`, `src/shared/{spawn-spec,settings,ticket}.ts`.
 - [ ] **4. Remote agents.** ssh+tmux recipe, remote hook, liveness, tmux repaint on attach,

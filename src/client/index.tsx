@@ -1,11 +1,13 @@
 /**
  * TUI client entry (`ao`) — a thin Ink app (design §3.1, §19).
  *
- * MILESTONE 1: a minimal dashboard — a flat, human-ordered list of tasks and their sessions; navigate
- * with the arrows, Enter to attach (Ink is suspended for raw byte passthrough, then re-rendered on
- * detach), `n` to create a task, `a` to add an agent, `x` to close a session, `r` to refresh, `q` to
- * quit. Auto-starts the daemon if none is listening. The rich dashboard (status glyphs, PR rows,
- * focus view, usage/quota, the full keymap) is build step 2.
+ * MILESTONE 2 dashboard: a flat, HUMAN-ORDERED list of tasks and their sessions — never re-sorted by
+ * urgency or recency (rows must not move under the cursor, §19). Each task shows a rollup glyph (the
+ * highest-attention session status, §10.1); each session shows its status glyph, title, tool:model,
+ * location, worktree/planning badges. Live status arrives via `session.status` events on top of a 1s
+ * poll. Navigate with the arrows, Enter to attach (Ink suspends for raw passthrough, re-renders on
+ * detach), n new task, a add agent, x close, r refresh, q quit. PR rows, usage/quota, and the focus
+ * view arrive with their subsystems (build steps 5+).
  */
 
 import React, { useEffect, useState } from "react";
@@ -13,6 +15,7 @@ import { render, Box, Text, useInput, useApp } from "ink";
 import { connectDaemon, type DaemonClient } from "./daemon-client.ts";
 import { attachSession } from "./attach.ts";
 import { paths } from "../shared/paths.ts";
+import { statusStyle, taskRollupStatus } from "../shared/status.ts";
 import type { Task, Session, SessionStatus } from "../shared/types.ts";
 
 type SessionView = Session & { status: SessionStatus };
@@ -20,21 +23,49 @@ interface Snapshot { tasks: Task[]; sessions: SessionView[] }
 type Action = { type: "quit" } | { type: "attach"; sessionId: string };
 
 type Row =
-  | { kind: "task"; task: Task }
+  | { kind: "task"; task: Task; rollup: SessionStatus | null }
   | { kind: "session"; session: SessionView };
 
 function buildRows(snap: Snapshot): Row[] {
   const rows: Row[] = [];
   for (const task of snap.tasks) {
-    rows.push({ kind: "task", task });
-    for (const s of snap.sessions.filter((x) => x.taskId === task.id)) {
-      rows.push({ kind: "session", session: s });
-    }
+    const sessions = snap.sessions.filter((x) => x.taskId === task.id);
+    rows.push({ kind: "task", task, rollup: taskRollupStatus(sessions.map((s) => s.status)) });
+    for (const s of sessions) rows.push({ kind: "session", session: s });
   }
   return rows;
 }
 
 const EMPTY: Snapshot = { tasks: [], sessions: [] };
+
+function TaskRow({ row, selected }: { row: Extract<Row, { kind: "task" }>; selected: boolean }) {
+  const marker = selected ? "› " : "  ";
+  const style = row.rollup ? statusStyle(row.rollup) : null;
+  return (
+    <Text color={selected ? "cyan" : undefined} bold>
+      {marker}
+      {style
+        ? <Text color={style.color} dimColor={style.dim}>{style.glyph} </Text>
+        : <Text dimColor>▸ </Text>}
+      {row.task.name}
+      {row.task.status === "closed" ? <Text dimColor> (closed)</Text> : null}
+    </Text>
+  );
+}
+
+function SessionRow({ s, selected }: { s: SessionView; selected: boolean }) {
+  const marker = selected ? "› " : "  ";
+  const style = statusStyle(s.status);
+  return (
+    <Text color={selected ? "cyan" : undefined}>
+      {marker}    <Text color={style.color} dimColor={style.dim}>{style.glyph}</Text>{" "}
+      {s.title || s.id.slice(0, 8)}
+      <Text dimColor> · {s.tool}:{s.model} · {s.location}{s.usesWorktree ? " wt" : ""}</Text>
+      {" "}<Text color={style.color} dimColor={style.dim}>{style.label}</Text>
+      {s.planning ? <Text color="magenta"> ·planning</Text> : null}
+    </Text>
+  );
+}
 
 function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: Action) => void }) {
   const { exit } = useApp();
@@ -52,13 +83,21 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
   useEffect(() => {
     void refresh();
     const t = setInterval(() => void refresh(), 1000);
-    return () => clearInterval(t);
+    const off = client.on((ev) => {
+      if (ev.type === "session.status" || ev.type === "session.exit") void refresh();
+    });
+    return () => { clearInterval(t); off(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const rows = buildRows(snap);
   const clamped = Math.min(cursor, Math.max(0, rows.length - 1));
   const current = rows[clamped];
+
+  const taskFor = (): Task | undefined =>
+    current?.kind === "task" ? current.task
+      : current?.kind === "session" ? snap.tasks.find((t) => t.id === current.session.taskId)
+      : undefined;
 
   useInput((input, key) => {
     if (mode === "newTask") {
@@ -81,8 +120,7 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
     if (input === "n") { setMode("newTask"); return; }
 
     if (input === "a") {
-      const task = current?.kind === "task" ? current.task
-        : current?.kind === "session" ? snap.tasks.find((t) => t.id === current.session.taskId) : undefined;
+      const task = taskFor();
       if (task) {
         client.request("session.spawn", {
           taskId: task.id, tool: "claude", location: "local", cwd: process.cwd(),
@@ -101,27 +139,19 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
     }
   });
 
+  const openTasks = snap.tasks.filter((t) => t.status === "open").length;
+
   return (
     <Box flexDirection="column">
-      <Text bold>agent-orchestrator</Text>
+      <Text bold>
+        agent-orchestrator <Text dimColor>· {openTasks} open · {snap.sessions.length} sessions</Text>
+      </Text>
       {rows.length === 0 && <Text dimColor>no tasks yet — press n to create one</Text>}
-      {rows.map((row, idx) => {
-        const sel = idx === clamped;
-        const marker = sel ? "› " : "  ";
-        if (row.kind === "task") {
-          return (
-            <Text key={`t-${row.task.id}`} color={sel ? "cyan" : undefined} bold>
-              {marker}▸ {row.task.name} {row.task.status === "closed" ? "(closed)" : ""}
-            </Text>
-          );
-        }
-        const s = row.session;
-        return (
-          <Text key={`s-${s.id}`} color={sel ? "cyan" : undefined}>
-            {marker}    {s.title || s.id.slice(0, 8)} · {s.tool} · {s.status}
-          </Text>
-        );
-      })}
+      {rows.map((row, idx) =>
+        row.kind === "task"
+          ? <TaskRow key={`t-${row.task.id}`} row={row} selected={idx === clamped} />
+          : <SessionRow key={`s-${row.session.id}`} s={row.session} selected={idx === clamped} />,
+      )}
       {mode === "newTask" && <Text>new task name: {draft}▌</Text>}
       {error && <Text color="red">{error}</Text>}
       <Text dimColor>↑/↓ move · enter attach · n new task · a add agent · x close · r refresh · q quit</Text>

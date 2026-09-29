@@ -69,6 +69,26 @@ describe("daemon <-> client end to end", () => {
     expect(sessions.find((s) => s.id === session.id)).toBeDefined();
   });
 
+  test("broadcasts session.status transitions (working -> exited)", async () => {
+    home = mkdtempSync(join(tmpdir(), "ao-test-"));
+    daemon = startDaemon(home);
+    client = await connectDaemon(daemon.socketPath);
+
+    const statuses: string[] = [];
+    client.on((ev) => {
+      if (ev.type === "session.status") statuses.push((ev.data as { status: string }).status);
+    });
+
+    const task = await client.request<Task>("task.create", { name: "t" });
+    await client.request<Session>("session.spawn", {
+      taskId: task.id, tool: "claude", location: "local", cwd: home,
+      command: ["bash", "-c", "printf hi; sleep 0.05"],
+    });
+
+    await waitFor(() => statuses.includes("exited"));
+    expect(statuses).toContain("working");
+  });
+
   test("rejects unsupported requests without crashing the daemon", async () => {
     home = mkdtempSync(join(tmpdir(), "ao-test-"));
     daemon = startDaemon(home);

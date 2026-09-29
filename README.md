@@ -8,10 +8,11 @@ exception, the embedded OpenRouter runtime). It is the shift supervisor and the 
 belt; the machines are the agent CLIs (`claude`, `codex`, `copilot`, and a built-in
 `openrouter` runtime).
 
-> **Status: early.** Built from a complete design description. **Milestone 1 is implemented**
-> (daemon + SQLite + UDS binary framing + local PTY + attach/detach + terminal reset, with tests);
-> everything past it is still stubbed — each stub cites the design section it implements. See
-> [`BUILD.md`](./BUILD.md) for the ordered build plan and what's done.
+> **Status: early.** Built from a complete design description. **Milestones 1-2 are implemented**
+> (daemon + SQLite + UDS binary framing + local PTY + attach/detach + terminal reset; the seven-state
+> status machine with notify hooks + idle timing, and a live dashboard with status glyphs and stable
+> ordering — all with tests). Everything past that is still stubbed — each stub cites the design
+> section it implements. See [`BUILD.md`](./BUILD.md) for the ordered build plan and what's done.
 
 ---
 

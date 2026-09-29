@@ -7,6 +7,7 @@
 export * from "./types.ts";
 export * from "./wire.ts";
 export * from "./paths.ts";
+export * from "./status.ts";
 export * from "./config.ts";
 export * from "./settings.ts";
 export * from "./profile.ts";

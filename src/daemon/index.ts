@@ -14,11 +14,13 @@ import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { paths, stateHome } from "../shared/paths.ts";
 import { Store } from "./store.ts";
 import { createSessionManager, type SessionManager } from "./session-manager.ts";
+import { createStatusTracker, type StatusTracker } from "./monitors/status.ts";
 import { startUdsServer, type UdsServer } from "./uds-server.ts";
 
 export interface Daemon {
   store: Store;
   manager: SessionManager;
+  tracker: StatusTracker;
   server: UdsServer;
   socketPath: string;
   stop(): void;
@@ -32,22 +34,27 @@ export function startDaemon(home = stateHome()): Daemon {
   }
 
   const store = new Store(p.db);
-  const manager = createSessionManager(store);
+  const tracker = createStatusTracker({ home });
+  const manager = createSessionManager(store, tracker);
   const server = startUdsServer(p.socket, { store, manager });
 
   // Broadcast runtime status transitions to all clients (design §8.2 manager fan-out).
-  manager.onStatus(({ sessionId, status }) =>
+  tracker.onChange(({ sessionId, status }) =>
     server.broadcast({ type: "session.status", data: { sessionId, status } }));
   manager.onExit(({ sessionId, exit }) =>
     server.broadcast({ type: "session.exit", data: { sessionId, ...exit } }));
 
+  tracker.start();
+
   return {
     store,
     manager,
+    tracker,
     server,
     socketPath: p.socket,
     stop() {
       server.stop();
+      tracker.stop();
       manager.shutdown();
       store.close();
     },

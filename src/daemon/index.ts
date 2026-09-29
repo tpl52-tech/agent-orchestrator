@@ -12,6 +12,7 @@
 
 import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { paths, stateHome } from "../shared/paths.ts";
+import { loadOperatorConfig } from "../shared/config.ts";
 import { Store } from "./store.ts";
 import { createSessionManager, type SessionManager } from "./session-manager.ts";
 import { createStatusTracker, type StatusTracker } from "./monitors/status.ts";
@@ -34,8 +35,9 @@ export function startDaemon(home = stateHome()): Daemon {
   }
 
   const store = new Store(p.db);
+  const config = loadOperatorConfig(home);
   const tracker = createStatusTracker({ home });
-  const manager = createSessionManager(store, tracker);
+  const manager = createSessionManager(store, tracker, config, home);
   const server = startUdsServer(p.socket, { store, manager });
 
   // Broadcast runtime status transitions to all clients (design §8.2 manager fan-out).

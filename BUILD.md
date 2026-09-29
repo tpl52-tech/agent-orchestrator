@@ -21,8 +21,14 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       daemon-level working→exited broadcast). Deferred: the CONFIDENT stuck via transcript-growth (8-min
       no-progress) — wired but fed only once transcript reading lands (step 11). PR rows / usage / quota
       cells and the focus view come with steps 5+.
-- [ ] **3. Spawning.** Worktrees, per-CLI spawn spec, ticket seed expansion, settings. —
-      `src/daemon/worktree.ts`, `src/shared/{spawn-spec,settings,ticket}.ts`.
+- [x] **3. Spawning.** The full spawn sequence (§7.1): profile resolution, per-CLI spawn spec
+      (claude/codex/copilot, §7.2), ticket seed expansion (§7.3), worktree provisioning (§7.4),
+      tolerant settings + a lite operator-config loader, and deferred claude seed delivery (§10.7). —
+      `src/shared/{spawn-spec,settings,ticket,profile,config}.ts`, `src/daemon/{worktree,session-manager}.ts`.
+      Covered by `bun test` (settings parse/diff, profile select/normalize/cwd, ticket extract/expand,
+      per-CLI argv, real-git worktree provisioning/removal/conflict, and a worktree-through-the-daemon
+      spawn). Deferred: devbox spawning (step 4), codex rollout discovery (step 11), the four-layer
+      strict `resolveConfig` with identity validation + defaults.json merge (later).
 - [ ] **4. Remote agents.** ssh+tmux recipe, remote hook, liveness, tmux repaint on attach,
       Tailscale re-auth detection. — `src/shared/remote.ts`, `src/daemon/pty.ts`, `deploy/box/`.
 - [ ] **5. Work items.** Branch linking, batched GitHub GraphQL query, derived states,

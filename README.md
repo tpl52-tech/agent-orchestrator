@@ -8,10 +8,10 @@ exception, the embedded OpenRouter runtime). It is the shift supervisor and the 
 belt; the machines are the agent CLIs (`claude`, `codex`, `copilot`, and a built-in
 `openrouter` runtime).
 
-> **Status: scaffold.** This repository is a structural foundation generated from a complete
-> design description. Types, the SQLite schema, and the wire protocol are stubbed with real
-> shapes; **there is no runtime behavior yet.** See [`BUILD.md`](./BUILD.md) for the roadmap
-> and the ordered build plan. Nearly every stub cites the design section it implements.
+> **Status: early.** Built from a complete design description. **Milestone 1 is implemented**
+> (daemon + SQLite + UDS binary framing + local PTY + attach/detach + terminal reset, with tests);
+> everything past it is still stubbed — each stub cites the design section it implements. See
+> [`BUILD.md`](./BUILD.md) for the ordered build plan and what's done.
 
 ---
 
@@ -134,12 +134,17 @@ the convergence-gate check name, Linear team keys/workspace, the alert persona n
 supervisor, PTY/tmux plumbing, status machine, nudge safety, work-item derivation,
 policy/actuator, accounting, OpenRouter runtime, federation — is generic.
 
-## Getting started (once implemented)
+## Getting started
 
 ```sh
 bun install
-ao setup           # idempotent wizard; writes ~/.agent-orchestrator/config.json
-ao                 # launch the TUI (auto-starts the daemon)
+bun test                 # framing, store, PTY, and end-to-end daemon↔client tests
+bun run typecheck        # tsc --noEmit
+
+bun run src/cli/index.ts # launch the minimal TUI (auto-starts the daemon)
+# in the TUI: n = new task, a = add agent, enter = attach, Ctrl-B Ctrl-B = detach, q = quit
 ```
 
-Today `bun run typecheck` is the useful command — it checks the stubbed types compile.
+`ao setup` and most subcommands are not implemented yet (they print a pointer to `BUILD.md`).
+The daemon runs directly via `bun run src/daemon/index.ts`; state lives in `~/.agent-orchestrator`
+(override with `AO_HOME`).

@@ -1,31 +1,227 @@
 /**
  * Unix-domain socket server (design §8.2, §8.3, §5.2).
  *
- * Serves the wire protocol (see src/shared/wire.ts). No authentication: filesystem permissions
- * on the socket file are the only protection. On boot: remove a stale socket file then listen
- * (no liveness probe of an old daemon). The CLI refuses to spawn a second daemon when launchd
- * manages one (waits up to 5s for it instead).
+ * Serves the wire protocol (see src/shared/wire.ts). No authentication: filesystem permissions on the
+ * socket file are the only protection. On boot: remove a stale socket file then listen (no liveness
+ * probe of an old daemon, design §5.2).
  *
- * Fan-out rules (design §8.2):
- *   - manager events go to ALL clients (and tell the monitor to drop backoff for that session);
- *   - work-item events are suppressed entirely while ANY client is attached (control frames
- *     interleaved with raw PTY bytes broke repaint; clients refresh on detach);
- *   - Linear events go per-socket to UNATTACHED sockets only.
+ * MILESTONE 1: the request surface for tasks, sessions, attach/detach, and snapshots. The full
+ * fan-out rules (work-item suppression while attached, per-socket Linear events) and the rest of the
+ * request surface arrive with their subsystems (build steps 2+).
  */
 
-import type { ControlEvent } from "../shared/wire.ts";
+import { existsSync, unlinkSync } from "node:fs";
+import {
+  FrameKind, FrameDecoder, createFrameWriter, controlFrame, parseControl, parseResize,
+  ptyOutputFrame, type Frame, type FrameWriter, type ControlRequest, type ControlEvent,
+} from "../shared/wire.ts";
+import type { Store } from "./store.ts";
+import type { SessionManager } from "./session-manager.ts";
 
-/** A supplier of the 1-second snapshot the client renders (design §5.1 step 9). */
-export type SnapshotSupplier = () => unknown;
+interface ConnState {
+  decoder: FrameDecoder;
+  writer: FrameWriter;
+  attachedSessionId: string | null;
+  unsubscribe: (() => void) | null;
+}
+
+export interface UdsServerDeps {
+  store: Store;
+  manager: SessionManager;
+}
 
 export interface UdsServer {
   broadcast(event: ControlEvent): void;
-  /** true iff any client is currently attached (isBusy). */
+  /** true iff any client is currently attached (isBusy, design §5.1). */
   isBusy(): boolean;
   stop(): void;
 }
 
-/** TODO(step 1): implement listen + framing + request dispatch + fan-out rules. */
-export function startUdsServer(_socketPath: string, _snapshot: SnapshotSupplier): UdsServer {
-  throw new Error("uds-server.startUdsServer: not implemented (design §8.2, §8.3)");
+export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServer {
+  const { store, manager } = deps;
+  const conns = new Set<ConnState>();
+
+  if (existsSync(socketPath)) unlinkSync(socketPath); // stale socket, no liveness probe (§5.2)
+
+  const server = Bun.listen<ConnState>({
+    unix: socketPath,
+    socket: {
+      open(socket) {
+        socket.data = {
+          decoder: new FrameDecoder(),
+          writer: createFrameWriter(socket),
+          attachedSessionId: null,
+          unsubscribe: null,
+        };
+        conns.add(socket.data);
+      },
+      data(socket, chunk) {
+        const conn = socket.data;
+        for (const frame of conn.decoder.push(chunk)) {
+          try {
+            handleFrame(conn, frame);
+          } catch (err) {
+            // A malformed frame should never take the daemon down.
+            console.error("uds: frame handling error:", err);
+          }
+        }
+      },
+      drain(socket) {
+        socket.data.writer.flush();
+      },
+      close(socket) {
+        teardown(socket.data);
+      },
+      error(socket, err) {
+        console.error("uds: socket error:", err);
+        teardown(socket.data);
+      },
+    },
+  });
+
+  function teardown(conn: ConnState): void {
+    conn.unsubscribe?.();
+    conn.unsubscribe = null;
+    conn.attachedSessionId = null;
+    conns.delete(conn);
+  }
+
+  function handleFrame(conn: ConnState, frame: Frame): void {
+    switch (frame.kind) {
+      case FrameKind.Control: {
+        const msg = parseControl(frame.payload);
+        if (msg.msg === "request") void respond(conn, msg);
+        return;
+      }
+      case FrameKind.PtyInput: {
+        if (frame.sessionId) manager.write(frame.sessionId, frame.payload);
+        return;
+      }
+      case FrameKind.PtyResize: {
+        if (frame.sessionId) {
+          const { cols, rows } = parseResize(frame.payload);
+          manager.resize(frame.sessionId, cols, rows);
+        }
+        return;
+      }
+      default:
+        return; // PtyOutput is daemon->client only; ignore inbound
+    }
+  }
+
+  async function respond(conn: ConnState, req: ControlRequest): Promise<void> {
+    try {
+      const data = await dispatch(conn, req);
+      conn.writer.write(controlFrame({ msg: "response", id: req.id, ok: true, data }));
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      conn.writer.write(controlFrame({ msg: "response", id: req.id, ok: false, error }));
+    }
+  }
+
+  function dispatch(conn: ConnState, req: ControlRequest): unknown {
+    const p = (req.params ?? {}) as Record<string, any>;
+    switch (req.type) {
+      // --- tasks ---
+      case "task.list":
+        return store.listTasks(p.includeClosed ?? true);
+      case "task.create":
+        return store.createTask({ name: p.name, description: p.description });
+      case "task.update":
+        return store.updateTask(p.id, { name: p.name, description: p.description });
+      case "task.close":
+        store.closeTask(p.id);
+        return { ok: true };
+      case "task.reopen":
+        store.reopenTask(p.id);
+        return { ok: true };
+
+      // --- sessions ---
+      case "session.list":
+        return store.listSessions({ taskId: p.taskId, includeClosed: p.includeClosed })
+          .map((s) => ({ ...s, status: manager.status(s.id) }));
+      case "session.spawn":
+        return manager.spawn(p as any);
+      case "session.rename":
+        return store.updateSession(p.id, { title: p.title });
+      case "session.setPlanning":
+        return store.updateSession(p.id, { planning: !!p.planning });
+      case "session.resume":
+        manager.resume(p.sessionId, sizeOf(p));
+        return { ok: true };
+      case "session.kill":
+        manager.kill(p.sessionId);
+        return { ok: true };
+      case "session.close":
+        manager.kill(p.sessionId);
+        store.closeSession(p.sessionId);
+        return { ok: true };
+      case "session.remove":
+        manager.kill(p.sessionId);
+        store.removeSession(p.sessionId);
+        return { ok: true };
+      case "session.interrupt":
+        manager.write(p.sessionId, new Uint8Array([0x1b])); // bare ESC, no CR (design §10.8)
+        return { ok: true };
+      case "session.attach":
+        return attach(conn, p.sessionId, sizeOf(p));
+      case "session.detach":
+        detach(conn);
+        return { ok: true };
+
+      // --- snapshot ---
+      case "snapshot.get":
+        return snapshot();
+
+      default:
+        throw new Error(`unsupported request in Milestone 1: ${req.type}`);
+    }
+  }
+
+  function attach(conn: ConnState, sessionId: string, size?: { cols: number; rows: number }): unknown {
+    detach(conn); // one attachment per connection
+    const pty = manager.resume(sessionId, size);
+    // Register the output listener BEFORE repaint (design §8.4), then send the replay buffer.
+    conn.unsubscribe = pty.addOutputListener((bytes) => {
+      conn.writer.write(ptyOutputFrame(sessionId, bytes));
+    });
+    conn.attachedSessionId = sessionId;
+    const replay = pty.replay();
+    if (replay.length) conn.writer.write(ptyOutputFrame(sessionId, replay));
+    return { ok: true, attached: sessionId };
+  }
+
+  function detach(conn: ConnState): void {
+    conn.unsubscribe?.();
+    conn.unsubscribe = null;
+    conn.attachedSessionId = null;
+  }
+
+  function snapshot(): unknown {
+    const tasks = store.listTasks(true);
+    const sessions = store.listSessions({ includeClosed: false })
+      .map((s) => ({ ...s, status: manager.status(s.id) }));
+    return { tasks, sessions, now: Date.now() };
+  }
+
+  return {
+    broadcast(event) {
+      const frame = controlFrame({ msg: "event", ...event });
+      for (const conn of conns) conn.writer.write(frame);
+    },
+    isBusy() {
+      for (const conn of conns) if (conn.attachedSessionId) return true;
+      return false;
+    },
+    stop() {
+      server.stop(true);
+      if (existsSync(socketPath)) {
+        try { unlinkSync(socketPath); } catch { /* already gone */ }
+      }
+    },
+  };
+}
+
+function sizeOf(p: Record<string, any>): { cols: number; rows: number } | undefined {
+  return p.cols && p.rows ? { cols: p.cols, rows: p.rows } : undefined;
 }

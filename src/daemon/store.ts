@@ -14,6 +14,9 @@
  */
 
 import { Database } from "bun:sqlite";
+import type {
+  Task, TaskStatus, Session, Tool, Location, Permissions, Effort,
+} from "../shared/types.ts";
 
 export const PRAGMAS = ["PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON"];
 
@@ -247,10 +250,43 @@ export function migrate(db: Database): void {
   // TODO: apply HEAL_COLUMNS with IF-NOT-EXISTS semantics (ALTER TABLE ADD COLUMN, ignore dup).
 }
 
+type Row = Record<string, any>;
+
+const b = (v: unknown): boolean => v === 1 || v === true;
+const i = (v: boolean): number => (v ? 1 : 0);
+
+export interface CreateTaskParams {
+  name: string;
+  description?: string;
+}
+
+export interface CreateSessionParams {
+  taskId: string;
+  title?: string;
+  tool: Tool;
+  location: Location;
+  cwd: string;
+  usesWorktree?: boolean;
+  worktreePath?: string | null;
+  model?: string;
+  permissions?: Permissions;
+  effort?: Effort | null;
+  resumeHandle?: string | null;
+  tmuxSession?: string | null;
+  worktreeBranch?: string | null;
+  profileId?: string;
+}
+
+/** Fields of a session that may be updated after creation. */
+export type SessionPatch = Partial<Pick<Session,
+  | "title" | "model" | "permissions" | "effort" | "resumeHandle" | "tmuxSession"
+  | "worktreePath" | "worktreeBranch" | "planning" | "draftMayBeStranded"
+  | "codexTranscriptPath" | "codexSessionId">>;
+
 /**
- * The typed data-access layer over the SQLite file. The daemon holds exactly one of these; the
- * Mac reads the box DB only through a one-shot read-only process.
- * TODO(step 1+): implement the query methods incrementally as each subsystem lands.
+ * The typed data-access layer over the SQLite file (design §6). The daemon holds exactly one of
+ * these; the Mac reads the box DB only through a one-shot read-only process. Methods are added per
+ * build step — Milestone 1 covers tasks and sessions.
  */
 export class Store {
   readonly db: Database;
@@ -264,6 +300,144 @@ export class Store {
     this.db.close();
   }
 
-  // Data-access methods (tasks, sessions, work items, alerts, audit, usage, linear) are added
-  // per build step. See BUILD.md.
+  // --- tasks ---------------------------------------------------------------
+
+  createTask(params: CreateTaskParams): Task {
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    const nextIdx =
+      (this.db.query("SELECT COALESCE(MAX(order_idx), 0) + 1 AS n FROM tasks").get() as Row).n as number;
+    this.db.run(
+      `INSERT INTO tasks (id, name, description, status, created_at, updated_at, order_idx)
+       VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+      [id, params.name, params.description ?? "", now, now, nextIdx],
+    );
+    return this.getTask(id)!;
+  }
+
+  getTask(id: string): Task | null {
+    const row = this.db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Row | null;
+    return row ? rowToTask(row) : null;
+  }
+
+  /** Human-assigned order: open tasks first, then by order_idx (design §6). */
+  listTasks(includeClosed = true): Task[] {
+    const sql = includeClosed
+      ? "SELECT * FROM tasks ORDER BY (status = 'closed') ASC, order_idx ASC"
+      : "SELECT * FROM tasks WHERE status = 'open' ORDER BY order_idx ASC";
+    return (this.db.query(sql).all() as Row[]).map(rowToTask);
+  }
+
+  updateTask(id: string, patch: { name?: string; description?: string }): Task | null {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (patch.name !== undefined) { sets.push("name = ?"); vals.push(patch.name); }
+    if (patch.description !== undefined) { sets.push("description = ?"); vals.push(patch.description); }
+    if (sets.length === 0) return this.getTask(id);
+    sets.push("updated_at = ?"); vals.push(Date.now());
+    vals.push(id);
+    this.db.run(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, vals as any);
+    return this.getTask(id);
+  }
+
+  closeTask(id: string): void {
+    this.db.run("UPDATE tasks SET status = 'closed', updated_at = ? WHERE id = ?", [Date.now(), id]);
+  }
+
+  reopenTask(id: string): void {
+    this.db.run("UPDATE tasks SET status = 'open', updated_at = ? WHERE id = ?", [Date.now(), id]);
+  }
+
+  // --- sessions ------------------------------------------------------------
+
+  createSession(params: CreateSessionParams): Session {
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    this.db.run(
+      `INSERT INTO sessions (
+         id, task_id, title, tool, location, cwd, uses_worktree, worktree_path, model,
+         permissions, effort, resume_handle, tmux_session, closed, created_at, closed_at,
+         worktree_branch, profile_id, codex_transcript_path, codex_session_id, planning,
+         draft_may_be_stranded
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, NULL, NULL, 0, 0)`,
+      [
+        id, params.taskId, params.title ?? "", params.tool, params.location, params.cwd,
+        i(params.usesWorktree ?? false), params.worktreePath ?? null, params.model ?? "auto",
+        params.permissions ?? "ask", params.effort ?? null, params.resumeHandle ?? null,
+        params.tmuxSession ?? null, now, params.worktreeBranch ?? null, params.profileId ?? "legacy",
+      ],
+    );
+    return this.getSession(id)!;
+  }
+
+  getSession(id: string): Session | null {
+    const row = this.db.query("SELECT * FROM sessions WHERE id = ?").get(id) as Row | null;
+    return row ? rowToSession(row) : null;
+  }
+
+  listSessions(opts: { taskId?: string; includeClosed?: boolean } = {}): Session[] {
+    const where: string[] = [];
+    const vals: unknown[] = [];
+    if (opts.taskId) { where.push("task_id = ?"); vals.push(opts.taskId); }
+    if (!opts.includeClosed) where.push("closed = 0");
+    const sql =
+      "SELECT * FROM sessions" + (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+      " ORDER BY created_at ASC";
+    return (this.db.query(sql).all(...(vals as any[])) as Row[]).map(rowToSession);
+  }
+
+  updateSession(id: string, patch: SessionPatch): Session | null {
+    const map: Record<keyof SessionPatch, string> = {
+      title: "title", model: "model", permissions: "permissions", effort: "effort",
+      resumeHandle: "resume_handle", tmuxSession: "tmux_session", worktreePath: "worktree_path",
+      worktreeBranch: "worktree_branch", planning: "planning",
+      draftMayBeStranded: "draft_may_be_stranded", codexTranscriptPath: "codex_transcript_path",
+      codexSessionId: "codex_session_id",
+    };
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [key, col] of Object.entries(map) as [keyof SessionPatch, string][]) {
+      const v = patch[key];
+      if (v === undefined) continue;
+      sets.push(`${col} = ?`);
+      vals.push(typeof v === "boolean" ? i(v) : v);
+    }
+    if (sets.length === 0) return this.getSession(id);
+    vals.push(id);
+    this.db.run(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, vals as any);
+    return this.getSession(id);
+  }
+
+  /** Close a session; COALESCE closed_at so a redundant close can't push the reaper deadline (§6). */
+  closeSession(id: string): void {
+    const now = Date.now();
+    this.db.run(
+      "UPDATE sessions SET closed = 1, closed_at = COALESCE(closed_at, ?) WHERE id = ?",
+      [now, id],
+    );
+  }
+
+  removeSession(id: string): void {
+    this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
+  }
+}
+
+function rowToTask(r: Row): Task {
+  return {
+    id: r.id, name: r.name, description: r.description, status: r.status as TaskStatus,
+    createdAt: r.created_at, updatedAt: r.updated_at, orderIdx: r.order_idx,
+  };
+}
+
+function rowToSession(r: Row): Session {
+  return {
+    id: r.id, taskId: r.task_id, title: r.title, tool: r.tool as Tool,
+    location: r.location as Location, cwd: r.cwd, usesWorktree: b(r.uses_worktree),
+    worktreePath: r.worktree_path, model: r.model, permissions: r.permissions as Permissions,
+    effort: (r.effort as Effort | null) ?? null, resumeHandle: r.resume_handle,
+    tmuxSession: r.tmux_session, closed: b(r.closed), createdAt: r.created_at,
+    closedAt: r.closed_at, worktreeBranch: r.worktree_branch, profileId: r.profile_id,
+    codexTranscriptPath: r.codex_transcript_path, codexSessionId: r.codex_session_id,
+    planning: b(r.planning), draftMayBeStranded: b(r.draft_may_be_stranded),
+  };
 }

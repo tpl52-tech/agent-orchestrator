@@ -75,8 +75,15 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       quota classification). Live-only: the narrator (claude -p + Slack), the CLI quota probes, and the
       transcript sampler needs a real ~/.claude transcript. Deferred: subagent rollup, usage
       series/daily tables, devbox on-box aggregation.
-- [ ] **9. Federation.** Box daemon, roster, manifest, report, deploy, watchdog, cleanup,
-      reaper. — `src/daemon/box/*`, `src/cli/monitor.ts`, `deploy/systemd/*`, `deploy/box/*`.
+- [x] **9. Federation.** The Mac<->box federation logic — the manifest with its **freshness inversion**
+      + ownership (§17.3), the roster **join** (exact-prefix, activity precedence, never-idle, §17.2), the
+      report **staleness** (§17.4), the box **tmux-nudge dispatch** (§10.5/§17), and the worktree
+      **reaper classification** (§17.6) — all pure + tested. Wired (live-only): the Mac federation loop
+      (manifest push / report pull), the worktree reaper executor, `ao monitor` deploy builders, and the
+      box-side report.sh. — `src/daemon/box/{manifest,roster,report,tmux-nudge,federation}.ts`,
+      `src/daemon/worktree.ts`, `src/cli/monitor.ts`, `deploy/{systemd,box}/*`. Deferred / live-only: the
+      headless box daemon process itself (`box/index.ts`), the reaper's dirty/docker vetoes, and the deploy
+      + systemd + credential-seeding ssh execution — all need a real devbox.
 - [ ] **10. OpenRouter runtime (optional).** Agent loop with kernel sandbox, compaction, MCP
       host, credential seeding. — `src/daemon/openrouter/*`.
 

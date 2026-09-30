@@ -22,6 +22,8 @@ import { createNudgeDelivery, type NudgeDelivery } from "./nudge/index.ts";
 import { startAutonomy, parseAutonomyConfig, type AutonomyEngine } from "./autonomy/index.ts";
 import { createAlertDispatcher, shellNarrator, type AlertDispatcher } from "./alerts.ts";
 import { startUsageLedger, type UsageLedger } from "./monitors/usage.ts";
+import { reapWorktrees } from "./worktree.ts";
+import { startBoxFederation, type BoxFederation } from "./box/federation.ts";
 import { RemoteAgents } from "./remote-box.ts";
 import { startUdsServer, type UdsServer } from "./uds-server.ts";
 
@@ -110,6 +112,26 @@ export function startDaemon(home = stateHome()): Daemon {
       })
     : null;
 
+  // Worktree reaper (immediately, then hourly, design §5.1/§17.6) over each repo that hosts a worktree.
+  const reapSessions = () => store.listSessions({ includeClosed: true })
+    .map((s) => ({ id: s.id, closed: s.closed, closedAt: s.closedAt }));
+  const repoTops = () => {
+    const tops = new Set<string>();
+    for (const s of store.listSessions({ includeClosed: true })) {
+      const i = s.worktreePath?.indexOf("/.worktrees/ao/") ?? -1;
+      if (s.worktreePath && i > 0) tops.add(s.worktreePath.slice(0, i));
+    }
+    return [...tops];
+  };
+  const reap = () => { for (const top of repoTops()) { try { reapWorktrees(top, reapSessions(), Date.now(), BUILTIN_DEFAULTS.worktreeReapDays); } catch { /* best-effort */ } } };
+  reap();
+  const reapTimer = setInterval(reap, 60 * 60 * 1000);
+
+  // Box federation over ssh, unless AO_BOX_MONITOR=0 (design §5.1 step 10).
+  const boxMonitorOff = (process.env.AO_BOX_MONITOR ?? "").trim() === "0";
+  const federation: BoxFederation | null = config.devbox && !boxMonitorOff
+    ? startBoxFederation({ store, dest: config.devbox }) : null;
+
   server = startUdsServer(p.socket, { store, manager, monitor, nudge, autonomyState, extendAutonomy });
 
   // Broadcast runtime status transitions to all clients (design §8.2 manager fan-out).
@@ -138,6 +160,8 @@ export function startDaemon(home = stateHome()): Daemon {
       usage.stop();
       monitor.stop();
       nudge.stop();
+      federation?.stop();
+      clearInterval(reapTimer);
       tracker.stop();
       manager.shutdown();
       store.close();

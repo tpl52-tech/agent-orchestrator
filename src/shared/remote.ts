@@ -98,6 +98,29 @@ export function tailEventsCommand(sessionId: string): string {
   return `tail -n +1 -F ${REMOTE_STATE_DIR}/${shellQuote(sessionId)}/events.log`;
 }
 
+// --- box-local tmux argv (the box runs tmux locally; text via argv, never a shell string, §10.5) ---
+
+/** `tmux send-keys -t <s> -l -- <text>` as argv (literal text, no shell interpretation). */
+export function tmuxSendLiteralArgv(tmuxSession: string, text: string): string[] {
+  return ["tmux", "send-keys", "-t", tmuxSession, "-l", "--", text];
+}
+/** `tmux send-keys -t <s> Enter` — Enter as its OWN invocation (design §10.5). */
+export function tmuxSendEnterArgv(tmuxSession: string): string[] {
+  return ["tmux", "send-keys", "-t", tmuxSession, "Enter"];
+}
+/** `tmux send-keys -t <s> Escape` — clear a typed body (design §10.5). */
+export function tmuxSendEscapeArgv(tmuxSession: string): string[] {
+  return ["tmux", "send-keys", "-t", tmuxSession, "Escape"];
+}
+/** `tmux capture-pane -p -e -t <s>` as argv (box-local). */
+export function tmuxCapturePaneArgv(tmuxSession: string): string[] {
+  return ["tmux", "capture-pane", "-p", "-e", "-t", tmuxSession];
+}
+/** `tmux kill-session -t <s>` as argv. */
+export function tmuxKillSessionArgv(tmuxSession: string): string[] {
+  return ["tmux", "kill-session", "-t", tmuxSession];
+}
+
 /**
  * Deploy the hook script: piped over ssh stdin, chmod +x (design §9.2). Returns the remote command;
  * the caller pipes the script body to it on stdin.

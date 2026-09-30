@@ -14,7 +14,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 interface GitResult { code: number; stdout: string; stderr: string; }
@@ -116,7 +116,50 @@ export function removeWorktree(opts: RemoveOptions): void {
   git(opts.repoTop, ["branch", "-D", opts.branch]);
 }
 
-/** The hourly disk-side reaper pass. TODO(step 9). */
-export function reapWorktrees(): Promise<void> {
-  throw new Error("worktree.reapWorktrees: not implemented (design §17.6, build step 9)");
+// --- reaper (design §17.6) --------------------------------------------------
+
+export type WorktreeClass = "open" | "too-recent" | "closed" | "orphan";
+
+export interface WorktreeEntry { id8: string; path: string; }
+export interface ReapableSession { id: string; closed: boolean; closedAt: number | null; }
+
+/**
+ * Classify a worktree dir against the store (design §17.6): a matching OPEN session -> open; closed
+ * within the grace -> too-recent; closed beyond the grace -> closed (reap); no matching session ->
+ * orphan (reap). The id8 is the first 8 chars of the session id.
+ */
+export function classifyWorktree(id8: string, sessions: ReapableSession[], now: number, graceDays: number): WorktreeClass {
+  const s = sessions.find((x) => x.id.startsWith(id8));
+  if (!s) return "orphan";
+  if (!s.closed) return "open";
+  const graceMs = graceDays * 24 * 60 * 60 * 1000;
+  if (s.closedAt != null && now - s.closedAt < graceMs) return "too-recent";
+  return "closed";
+}
+
+/** Which worktree entries should be reaped (closed-past-grace or orphan). Pure. */
+export function planReap(entries: WorktreeEntry[], sessions: ReapableSession[], now: number, graceDays: number): WorktreeEntry[] {
+  return entries.filter((e) => {
+    const c = classifyWorktree(e.id8, sessions, now, graceDays);
+    return c === "closed" || c === "orphan";
+  });
+}
+
+/**
+ * The hourly disk-side reaper pass (design §17.6). Enumerates <repoTop>/.worktrees/ao, classifies each
+ * against the store, and removes the closed/orphan ones (dirty + live-docker-mount vetoes are I/O and
+ * checked before removal). The classification (classifyWorktree/planReap) is pure + tested; this
+ * executor is live-ish and best-effort.
+ */
+export function reapWorktrees(repoTop: string, sessions: ReapableSession[], now: number, graceDays: number): void {
+  const dir = join(repoTop, ".worktrees", "ao");
+  if (!existsSync(dir)) return;
+  let ids: string[];
+  try { ids = readdirSync(dir); } catch { return; }
+  const entries: WorktreeEntry[] = ids.map((id8) => ({ id8, path: join(dir, id8) }));
+  for (const e of planReap(entries, sessions, now, graceDays)) {
+    // TODO(live): veto if the worktree is dirty or has a live docker mount (design §17.6).
+    const branchFor = sessions.find((s) => s.id.startsWith(e.id8));
+    removeWorktree({ repoTop, path: e.path, branch: branchFor ? `ao/${e.id8}` : `ao/${e.id8}` });
+  }
 }

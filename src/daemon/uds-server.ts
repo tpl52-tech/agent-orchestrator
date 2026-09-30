@@ -18,6 +18,7 @@ import {
 import type { Store } from "./store.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { WorkItemMonitor } from "./monitors/work-item.ts";
+import type { NudgeDelivery } from "./nudge/index.ts";
 
 interface ConnState {
   decoder: FrameDecoder;
@@ -30,6 +31,7 @@ export interface UdsServerDeps {
   store: Store;
   manager: SessionManager;
   monitor: WorkItemMonitor;
+  nudge: NudgeDelivery;
 }
 
 export interface UdsServer {
@@ -40,7 +42,7 @@ export interface UdsServer {
 }
 
 export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServer {
-  const { store, manager, monitor } = deps;
+  const { store, manager, monitor, nudge } = deps;
   const conns = new Set<ConnState>();
 
   if (existsSync(socketPath)) unlinkSync(socketPath); // stale socket, no liveness probe (§5.2)
@@ -146,8 +148,13 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
         return manager.spawn(p as any);
       case "session.rename":
         return store.updateSession(p.id, { title: p.title });
-      case "session.setPlanning":
-        return store.updateSession(p.id, { planning: !!p.planning });
+      case "session.setPlanning": {
+        const updated = store.updateSession(p.id, { planning: !!p.planning });
+        if (p.planning) nudge.clearAutonomous(p.id); // manual survive (§10.6)
+        return updated;
+      }
+      case "session.nudge":
+        return nudge.enqueue({ sessionId: p.sessionId, body: String(p.body ?? ""), manual: true, settleKeys: p.settle });
       case "session.resume":
         manager.resume(p.sessionId, sizeOf(p));
         return { ok: true };
@@ -156,11 +163,13 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
         return { ok: true };
       case "session.close":
         manager.kill(p.sessionId);
+        nudge.forget(p.sessionId);
         store.closeSession(p.sessionId);
         return { ok: true };
       case "session.remove":
         manager.kill(p.sessionId);
         manager.forget(p.sessionId);
+        nudge.forget(p.sessionId);
         store.removeSession(p.sessionId);
         return { ok: true };
       case "session.interrupt":

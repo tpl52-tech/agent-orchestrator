@@ -66,9 +66,15 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       authoritative, endedWithQuestion — is a later gap, so rule 5 blocked-question stays dormant); the
       GitHub delivery of request-codex/cto is live-only; alerts (alert-human decisions) are recorded but
       dispatched in step 8.
-- [ ] **8. Alerts / accounting.** Alerts + Slack narrator; usage ledger; quota probes. —
-      `src/daemon/{alerts,monitors/usage,monitors/quota}.ts`, `src/shared/pricing.ts`,
-      `deploy/alerts/narrate.sh`.
+- [x] **8. Alerts / accounting.** The alert dispatcher (opt-in AO_ALERTS=1; debounce/batch/attempts/
+      mark-before-narrate, §15.1) recording deterministic alert-human decisions, the Slack narrator shell
+      script, the usage ledger (pricing longest-prefix + cache multipliers; message-id-deduped transcript
+      sampler; lifetime totals), and quota window classification. — `src/daemon/{alerts,monitors/usage,
+      monitors/quota}.ts`, `src/shared/pricing.ts`, `deploy/alerts/narrate.sh`. Covered by `bun test`
+      (pricing, usage parse + accumulate, the dispatcher loop incl. debounce/forgotten/failure/dry-run,
+      quota classification). Live-only: the narrator (claude -p + Slack), the CLI quota probes, and the
+      transcript sampler needs a real ~/.claude transcript. Deferred: subagent rollup, usage
+      series/daily tables, devbox on-box aggregation.
 - [ ] **9. Federation.** Box daemon, roster, manifest, report, deploy, watchdog, cleanup,
       reaper. — `src/daemon/box/*`, `src/cli/monitor.ts`, `deploy/systemd/*`, `deploy/box/*`.
 - [ ] **10. OpenRouter runtime (optional).** Agent loop with kernel sandbox, compaction, MCP

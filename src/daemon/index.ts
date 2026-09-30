@@ -20,6 +20,8 @@ import { createStatusTracker, type StatusTracker } from "./monitors/status.ts";
 import { startWorkItemMonitor, type WorkItemMonitor } from "./monitors/work-item.ts";
 import { createNudgeDelivery, type NudgeDelivery } from "./nudge/index.ts";
 import { startAutonomy, parseAutonomyConfig, type AutonomyEngine } from "./autonomy/index.ts";
+import { createAlertDispatcher, shellNarrator, type AlertDispatcher } from "./alerts.ts";
+import { startUsageLedger, type UsageLedger } from "./monitors/usage.ts";
 import { RemoteAgents } from "./remote-box.ts";
 import { startUdsServer, type UdsServer } from "./uds-server.ts";
 
@@ -30,6 +32,8 @@ export interface Daemon {
   monitor: WorkItemMonitor;
   nudge: NudgeDelivery;
   autonomy: AutonomyEngine;
+  usage: UsageLedger;
+  alerts: AlertDispatcher | null;
   server: UdsServer;
   socketPath: string;
   stop(): void;
@@ -94,6 +98,18 @@ export function startDaemon(home = stateHome()): Daemon {
     return { until };
   };
 
+  // Usage accounting runs always (even with no repo). Alerts are opt-in (AO_ALERTS=1), not deploy-inherited.
+  const usage = startUsageLedger({ store });
+  const alertsOn = (process.env.AO_ALERTS ?? "").trim() === "1";
+  const narratePath = new URL("../../deploy/alerts/narrate.sh", import.meta.url).pathname;
+  const alerts = alertsOn
+    ? createAlertDispatcher({
+        store,
+        narrate: shellNarrator(narratePath, config.alertSlackId ?? ""),
+        dryRun: (process.env.AO_ALERTS_DRY_RUN ?? "").trim() === "1",
+      })
+    : null;
+
   server = startUdsServer(p.socket, { store, manager, monitor, nudge, autonomyState, extendAutonomy });
 
   // Broadcast runtime status transitions to all clients (design §8.2 manager fan-out).
@@ -111,11 +127,15 @@ export function startDaemon(home = stateHome()): Daemon {
     monitor,
     nudge,
     autonomy,
+    usage,
+    alerts,
     server,
     socketPath: p.socket,
     stop() {
       server.stop();
       autonomy.stop();
+      alerts?.stop();
+      usage.stop();
       monitor.stop();
       nudge.stop();
       tracker.stop();

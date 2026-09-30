@@ -132,6 +132,7 @@ export interface OperatorConfigLite {
   ctoLogin?: string;
   ctoBotLogin?: string;
   operatorLogin?: string;
+  alertSlackId?: string;
   defaultProfileId?: string;
   repo?: string;
 }
@@ -164,6 +165,7 @@ export function loadOperatorConfig(home = stateHome()): OperatorConfigLite {
     ctoLogin: typeof raw.ctoLogin === "string" ? raw.ctoLogin : undefined,
     ctoBotLogin: typeof raw.ctoBotLogin === "string" ? raw.ctoBotLogin : undefined,
     operatorLogin: typeof raw.operatorLogin === "string" ? raw.operatorLogin : undefined,
+    alertSlackId: typeof raw.alertSlackId === "string" ? raw.alertSlackId : undefined,
     defaultProfileId: typeof raw.defaultProfileId === "string" ? raw.defaultProfileId : undefined,
     repo: typeof raw.repo === "string" ? raw.repo : undefined,
   };

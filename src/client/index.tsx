@@ -22,7 +22,7 @@ import type { Task, Session, SessionStatus, WorkItem, CodexReviewState, CtoState
 
 type SessionView = Session & { status: SessionStatus };
 interface AutonomyState { enabled: boolean; dryRun: boolean; killed: boolean; window: string }
-interface Snapshot { tasks: Task[]; sessions: SessionView[]; workItems: WorkItem[]; autonomy?: AutonomyState; now?: number }
+interface Snapshot { tasks: Task[]; sessions: SessionView[]; workItems: WorkItem[]; usage?: Record<string, number>; autonomy?: AutonomyState; now?: number }
 type Action = { type: "quit" } | { type: "attach"; sessionId: string };
 
 type Row =
@@ -70,7 +70,7 @@ function TaskRow({ row, selected }: { row: Extract<Row, { kind: "task" }>; selec
   );
 }
 
-function SessionRow({ s, selected }: { s: SessionView; selected: boolean }) {
+function SessionRow({ s, selected, costMicros }: { s: SessionView; selected: boolean; costMicros?: number }) {
   const marker = selected ? "› " : "  ";
   const style = statusStyle(s.status);
   return (
@@ -80,6 +80,7 @@ function SessionRow({ s, selected }: { s: SessionView; selected: boolean }) {
       <Text dimColor> · {s.tool}:{s.model} · {s.location}{s.usesWorktree ? " wt" : ""}</Text>
       {" "}<Text color={style.color} dimColor={style.dim}>{style.label}</Text>
       {s.planning ? <Text color="magenta"> ·planning</Text> : null}
+      {costMicros ? <Text dimColor> · ${(costMicros / 1_000_000).toFixed(2)}</Text> : null}
     </Text>
   );
 }
@@ -289,7 +290,7 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
         row.kind === "task"
           ? <TaskRow key={`t-${row.task.id}`} row={row} selected={idx === clamped} />
           : row.kind === "session"
-            ? <SessionRow key={`s-${row.session.id}`} s={row.session} selected={idx === clamped} />
+            ? <SessionRow key={`s-${row.session.id}`} s={row.session} selected={idx === clamped} costMicros={snap.usage?.[row.session.id]} />
             : <PrRow key={`w-${row.item.id}`} item={row.item} selected={idx === clamped} />,
       )}
       {mode === "newTask" && <Text>new task name: {draft}▌</Text>}

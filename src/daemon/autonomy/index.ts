@@ -24,7 +24,16 @@ import { BUILTIN_DEFAULTS, type OperatorConfigLite } from "../../shared/config.t
 import { actingAllowed, parseExtensionDeadline, type WindowConfig } from "../../shared/autonomy-window.ts";
 import { selectProfile, DEFAULT_REVIEW_POLICY, type ReviewPolicy } from "../../shared/profile.ts";
 import { badStanding } from "../../shared/focus.ts";
-import type { WorkItem, SessionStatus, AutonomyDecision } from "../../shared/types.ts";
+import type { WorkItem, SessionStatus, AutonomyDecision, AlertKind } from "../../shared/types.ts";
+
+/** Derive the alert kind from an alert-human dedupe-key prefix (design §15.1). */
+function alertKind(dedupeKey: string): AlertKind {
+  const prefix = dedupeKey.split(":")[0];
+  if (prefix === "agent-dead" || prefix === "stalled" || prefix === "needs-input" || prefix === "ready-to-merge") {
+    return prefix;
+  }
+  return "ci-failed";
+}
 
 export * from "./config.ts";
 export * from "./policy.ts";
@@ -135,7 +144,16 @@ export function startAutonomy(deps: AutonomyDeps): AutonomyEngine {
     };
 
     const result = decide(inputs);
-    if (result.decision === "none" || result.decision === "alert-human") return; // alerts: step 8
+    if (result.decision === "alert-human") {
+      // Detection is deterministic; record the alert (the dispatcher narrates it, §15.1).
+      deps.store.recordAlert({
+        kind: alertKind(result.dedupeKey), dedupeKey: result.dedupeKey, summary: result.reason,
+        sessionId: session.id, workItemId: item.id,
+      });
+      deps.emit();
+      return;
+    }
+    if (result.decision === "none") return;
 
     const repo = selectProfile(deps.operatorConfig.profiles, { explicitId: session.profileId })?.repo
       ?? deps.operatorConfig.repo ?? item.repo ?? undefined;

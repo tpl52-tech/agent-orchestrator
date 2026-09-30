@@ -140,7 +140,7 @@ describe("daemon <-> client end to end", () => {
     home = mkdtempSync(join(tmpdir(), "ao-test-"));
     daemon = startDaemon(home);
     client = await connectDaemon(daemon.socketPath);
-    await expect(client.request("usage.get")).rejects.toThrow(/unsupported request/);
+    await expect(client.request("keepawake.set")).rejects.toThrow(/unsupported request/);
     // still alive afterward
     const snap = await client.request<{ tasks: unknown[] }>("snapshot.get");
     expect(Array.isArray(snap.tasks)).toBe(true);

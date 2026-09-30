@@ -201,6 +201,12 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
       case "autonomy.extend":
         return deps.extendAutonomy(Number(p.hours ?? 2));
 
+      // --- usage / quota ---
+      case "usage.get":
+        return store.usageTotals();
+      case "quota.get":
+        return {}; // live-only in M8 (design §15.3)
+
       // --- snapshot ---
       case "snapshot.get":
         return snapshot();
@@ -235,7 +241,11 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
     const sessions = store.listSessions({ includeClosed: false })
       .map((s) => ({ ...s, status: manager.status(s.id) }));
     const workItems = store.listActiveWorkItems();
-    return { tasks, sessions, workItems, autonomy: deps.autonomyState(), now: Date.now() };
+    const usageBySession: Record<string, number> = {};
+    for (const u of store.usageTotals()) {
+      if (u.costMicros != null) usageBySession[u.sessionId] = (usageBySession[u.sessionId] ?? 0) + u.costMicros;
+    }
+    return { tasks, sessions, workItems, usage: usageBySession, autonomy: deps.autonomyState(), now: Date.now() };
   }
 
   return {

@@ -8,13 +8,13 @@ exception, the embedded OpenRouter runtime). It is the shift supervisor and the 
 belt; the machines are the agent CLIs (`claude`, `codex`, `copilot`, and a built-in
 `openrouter` runtime).
 
-> **Status: taking shape.** Built from a complete design description. **Milestones 1-7 are implemented**
+> **Status: taking shape.** Built from a complete design description. **Milestones 1-8 are implemented**
 > (daemon + SQLite + UDS framing + PTY + attach; the status machine + live dashboard; the spawn
-> sequence; remote/devbox agents; the work-item monitor + focus view; nudge delivery; and **autonomy** —
-> the pure policy rule table, the actuator gate chain, the audit log, the acting window + file kill
-> switch + dry-run, and the activity log). GitHub and ssh/tmux I/O are validated only against a real
-> repo/devbox; the remaining pieces (alerts + Slack narrator, usage/quota, box federation, the
-> OpenRouter runtime) are still stubbed. See [`BUILD.md`](./BUILD.md) for the plan.
+> sequence; remote/devbox agents; the work-item monitor + focus view; nudge delivery; autonomy; and
+> **alerts + accounting** — the alert dispatcher + Slack narrator, the usage ledger with pricing, and
+> quota classification). GitHub, ssh/tmux, and the LLM-narrator/Slack I/O are validated only against a
+> real repo/devbox; the remaining pieces (box federation, the OpenRouter runtime) are still stubbed.
+> See [`BUILD.md`](./BUILD.md) for the plan.
 
 ---
 

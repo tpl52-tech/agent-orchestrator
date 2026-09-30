@@ -18,6 +18,7 @@ import type {
   Task, TaskStatus, Session, Tool, Location, Permissions, Effort,
   WorkItem, WorkItemKind, WorkItemLifecycle, WorkItemSource,
   AutonomyAction, AutonomyDecision, AutonomyStatus,
+  Alert, AlertKind, AlertSeverity,
 } from "../shared/types.ts";
 
 export const PRAGMAS = ["PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON"];
@@ -586,6 +587,102 @@ export class Store {
     return (this.db.query("SELECT * FROM autonomy_actions ORDER BY created_at DESC LIMIT ?").all(limit) as Row[])
       .map(rowToAction);
   }
+
+  // --- alerts (design §6, §15.1) -------------------------------------------
+
+  /** Record an alert (dedupe_key UNIQUE — a second occurrence of the same transition is a no-op). */
+  recordAlert(input: {
+    kind: AlertKind; dedupeKey: string; severity?: AlertSeverity; summary?: string;
+    sessionId?: string | null; workItemId?: string | null; payload?: unknown;
+  }): Alert {
+    const existing = this.db.query("SELECT * FROM alerts WHERE dedupe_key = ?").get(input.dedupeKey) as Row | null;
+    if (existing) return rowToAlert(existing);
+    const id = crypto.randomUUID();
+    this.db.run(
+      `INSERT INTO alerts (id, session_id, work_item_id, kind, severity, dedupe_key, summary, payload_json, attempts, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      [id, input.sessionId ?? null, input.workItemId ?? null, input.kind, input.severity ?? "attention",
+       input.dedupeKey, input.summary ?? "", JSON.stringify(input.payload ?? {}), Date.now()],
+    );
+    return this.getAlert(id)!;
+  }
+
+  getAlert(id: string): Alert | null {
+    const row = this.db.query("SELECT * FROM alerts WHERE id = ?").get(id) as Row | null;
+    return row ? rowToAlert(row) : null;
+  }
+
+  /** Undelivered, un-suppressed alerts still within the attempt budget (design §15.1). */
+  pendingAlerts(maxAttempts = 5): Alert[] {
+    return (this.db.query(
+      `SELECT * FROM alerts WHERE delivered_at IS NULL AND suppressed_at IS NULL AND attempts < ?
+         ORDER BY created_at ASC`).all(maxAttempts) as Row[]).map(rowToAlert);
+  }
+
+  /** Mark notified + increment attempts BEFORE invoking the narrator (a crash must not replay, §15.1). */
+  markAlertNotified(id: string): void {
+    this.db.run("UPDATE alerts SET notified_at = ?, attempts = attempts + 1 WHERE id = ?", [Date.now(), id]);
+  }
+
+  markAlertDelivered(id: string): void {
+    this.db.run("UPDATE alerts SET delivered_at = ? WHERE id = ?", [Date.now(), id]);
+  }
+
+  markAlertSuppressed(id: string): void {
+    this.db.run("UPDATE alerts SET suppressed_at = ? WHERE id = ?", [Date.now(), id]);
+  }
+
+  listAlerts(limit = 50): Alert[] {
+    return (this.db.query("SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?").all(limit) as Row[]).map(rowToAlert);
+  }
+
+  // --- usage (design §15.2) ------------------------------------------------
+
+  /** Accumulate lifetime token totals + cost for a (session, model). */
+  accumulateUsage(sessionId: string, model: string, add: {
+    input: number; output: number; cacheRead: number; cacheWrite: number; costMicros?: number | null;
+  }): void {
+    this.db.run(
+      `INSERT INTO session_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reported_cost_micros)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, model) DO UPDATE SET
+         input_tokens = input_tokens + excluded.input_tokens,
+         output_tokens = output_tokens + excluded.output_tokens,
+         cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+         cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+         reported_cost_micros = COALESCE(reported_cost_micros, 0) + COALESCE(excluded.reported_cost_micros, 0)`,
+      [sessionId, model, add.input, add.output, add.cacheRead, add.cacheWrite, add.costMicros ?? null],
+    );
+  }
+
+  usageProgress(sessionId: string, path: string): number {
+    const row = this.db.query("SELECT byte_mark FROM session_usage_progress WHERE session_id = ? AND path = ?")
+      .get(sessionId, path) as Row | null;
+    return (row?.byte_mark as number) ?? 0;
+  }
+
+  setUsageProgress(sessionId: string, path: string, byteMark: number): void {
+    this.db.run(
+      `INSERT INTO session_usage_progress (session_id, path, byte_mark) VALUES (?, ?, ?)
+       ON CONFLICT(session_id, path) DO UPDATE SET byte_mark = excluded.byte_mark`,
+      [sessionId, path, byteMark]);
+  }
+
+  usageTotals(): Array<{ sessionId: string; model: string; input: number; output: number; costMicros: number | null }> {
+    return (this.db.query("SELECT * FROM session_usage").all() as Row[]).map((r) => ({
+      sessionId: r.session_id, model: r.model, input: r.input_tokens, output: r.output_tokens,
+      costMicros: r.reported_cost_micros,
+    }));
+  }
+}
+
+function rowToAlert(r: Row): Alert {
+  return {
+    id: r.id, sessionId: r.session_id, workItemId: r.work_item_id, kind: r.kind as AlertKind,
+    severity: r.severity as AlertSeverity, dedupeKey: r.dedupe_key, summary: r.summary,
+    payloadJson: r.payload_json, attempts: r.attempts, createdAt: r.created_at,
+    notifiedAt: r.notified_at, deliveredAt: r.delivered_at, suppressedAt: r.suppressed_at,
+  };
 }
 
 function rowToAction(r: Row): AutonomyAction {

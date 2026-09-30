@@ -22,9 +22,14 @@ export interface TranscriptChunk {
   reset: boolean;
 }
 
-/** Compute the exact claude transcript path for a session (design §11). */
-export function claudeTranscriptPath(_home: string, _cwd: string, _resumeHandle: string): string {
-  throw new Error("transcript.claudeTranscriptPath: not implemented (design §11)");
+/**
+ * Compute the exact claude transcript path for a session (design §11):
+ * <home>/.claude/projects/<cwd with every "/" and "." replaced by "-">/<resumeHandle>.jsonl.
+ * Exact, because we minted the session id.
+ */
+export function claudeTranscriptPath(home: string, cwd: string, resumeHandle: string): string {
+  const slug = cwd.replace(/[/.]/g, "-");
+  return `${home}/.claude/projects/${slug}/${resumeHandle}.jsonl`;
 }
 
 /**

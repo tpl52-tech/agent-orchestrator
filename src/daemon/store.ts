@@ -279,8 +279,8 @@ export interface CreateSessionParams {
 
 /** Fields of a session that may be updated after creation. */
 export type SessionPatch = Partial<Pick<Session,
-  | "title" | "model" | "permissions" | "effort" | "resumeHandle" | "tmuxSession"
-  | "worktreePath" | "worktreeBranch" | "planning" | "draftMayBeStranded"
+  | "title" | "cwd" | "usesWorktree" | "model" | "permissions" | "effort" | "resumeHandle"
+  | "tmuxSession" | "worktreePath" | "worktreeBranch" | "planning" | "draftMayBeStranded"
   | "codexTranscriptPath" | "codexSessionId">>;
 
 /**
@@ -388,11 +388,11 @@ export class Store {
 
   updateSession(id: string, patch: SessionPatch): Session | null {
     const map: Record<keyof SessionPatch, string> = {
-      title: "title", model: "model", permissions: "permissions", effort: "effort",
-      resumeHandle: "resume_handle", tmuxSession: "tmux_session", worktreePath: "worktree_path",
-      worktreeBranch: "worktree_branch", planning: "planning",
-      draftMayBeStranded: "draft_may_be_stranded", codexTranscriptPath: "codex_transcript_path",
-      codexSessionId: "codex_session_id",
+      title: "title", cwd: "cwd", usesWorktree: "uses_worktree", model: "model",
+      permissions: "permissions", effort: "effort", resumeHandle: "resume_handle",
+      tmuxSession: "tmux_session", worktreePath: "worktree_path", worktreeBranch: "worktree_branch",
+      planning: "planning", draftMayBeStranded: "draft_may_be_stranded",
+      codexTranscriptPath: "codex_transcript_path", codexSessionId: "codex_session_id",
     };
     const sets: string[] = [];
     const vals: unknown[] = [];

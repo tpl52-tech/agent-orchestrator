@@ -11,8 +11,10 @@
  * Nothing personal is ever defaulted — an absent identity key is a startup error naming it.
  */
 
-import type { Profile } from "./profile.ts";
-import type { Settings } from "./settings.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { paths, stateHome } from "./paths.ts";
+import { normalizeProfiles, type Profile } from "./profile.ts";
+import { parseSettings, DEFAULT_SETTINGS, type Settings } from "./settings.ts";
 
 /** Personal identity — required or per-feature, NEVER defaulted (design §4.2). */
 export interface OperatorIdentity {
@@ -112,4 +114,60 @@ export function envOrUnset(name: string): string | undefined {
   if (raw == null) return undefined;
   const trimmed = raw.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/**
+ * A partial config the spawn sequence needs: settings + profiles + a few identity/team keys. This is
+ * the TOLERANT loader used from build step 3 onward; the strict four-layer {@link resolveConfig} (which
+ * throws on missing identity) is a later milestone. TODO: merge tracked defaults.json under the user
+ * file (design §4.1).
+ */
+export interface OperatorConfigLite {
+  settings: Settings;
+  profiles: Profile[];
+  branchOwner?: string;
+  devbox?: string;
+  linearWorkspace?: string;
+  linearTeamKeys?: string[];
+  ctoLogin?: string;
+  ctoBotLogin?: string;
+  defaultProfileId?: string;
+  repo?: string;
+}
+
+export function loadOperatorConfig(home = stateHome()): OperatorConfigLite {
+  const file = paths(home).config;
+  let raw: Record<string, any> = {};
+  if (existsSync(file)) {
+    try {
+      raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, any>;
+    } catch (err) {
+      // The strict loader (resolveConfig) will throw on this later; here we degrade so the daemon boots.
+      console.error(`config: ignoring malformed ${file}:`, err instanceof Error ? err.message : err);
+      raw = {};
+    }
+  }
+  let profiles: Profile[] = [];
+  try {
+    profiles = normalizeProfiles(raw.profiles);
+  } catch (err) {
+    console.error("config: ignoring invalid profiles:", err instanceof Error ? err.message : err);
+  }
+  return {
+    settings: parseSettings(raw.settings),
+    profiles,
+    branchOwner: typeof raw.branchOwner === "string" ? raw.branchOwner : undefined,
+    devbox: typeof raw.devbox === "string" ? raw.devbox : undefined,
+    linearWorkspace: typeof raw.linearWorkspace === "string" ? raw.linearWorkspace : undefined,
+    linearTeamKeys: Array.isArray(raw.linearTeamKeys) ? raw.linearTeamKeys : undefined,
+    ctoLogin: typeof raw.ctoLogin === "string" ? raw.ctoLogin : undefined,
+    ctoBotLogin: typeof raw.ctoBotLogin === "string" ? raw.ctoBotLogin : undefined,
+    defaultProfileId: typeof raw.defaultProfileId === "string" ? raw.defaultProfileId : undefined,
+    repo: typeof raw.repo === "string" ? raw.repo : undefined,
+  };
+}
+
+/** The default lite config (no config file present). */
+export function defaultOperatorConfig(): OperatorConfigLite {
+  return { settings: DEFAULT_SETTINGS, profiles: [] };
 }

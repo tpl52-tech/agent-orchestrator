@@ -16,6 +16,7 @@ import { loadOperatorConfig } from "../shared/config.ts";
 import { Store } from "./store.ts";
 import { createSessionManager, type SessionManager } from "./session-manager.ts";
 import { createStatusTracker, type StatusTracker } from "./monitors/status.ts";
+import { RemoteAgents } from "./remote-box.ts";
 import { startUdsServer, type UdsServer } from "./uds-server.ts";
 
 export interface Daemon {
@@ -37,8 +38,19 @@ export function startDaemon(home = stateHome()): Daemon {
   const store = new Store(p.db);
   const config = loadOperatorConfig(home);
   const tracker = createStatusTracker({ home });
-  const manager = createSessionManager(store, tracker, config, home);
-  const server = startUdsServer(p.socket, { store, manager });
+
+  // The remote-agent helper (devbox) needs to emit openUrl through the server, created just below.
+  let server: UdsServer;
+  const remote = config.devbox
+    ? new RemoteAgents({
+        dest: config.devbox,
+        tracker,
+        onOpenUrl: (sessionId, url) => server.broadcast({ type: "session.openUrl", data: { sessionId, url } }),
+      })
+    : undefined;
+
+  const manager = createSessionManager(store, tracker, config, home, remote);
+  server = startUdsServer(p.socket, { store, manager });
 
   // Broadcast runtime status transitions to all clients (design §8.2 manager fan-out).
   tracker.onChange(({ sessionId, status }) =>

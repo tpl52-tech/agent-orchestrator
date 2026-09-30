@@ -179,16 +179,17 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
     }
   }
 
-  function attach(conn: ConnState, sessionId: string, size?: { cols: number; rows: number }): unknown {
+  async function attach(conn: ConnState, sessionId: string, size?: { cols: number; rows: number }): Promise<unknown> {
     detach(conn); // one attachment per connection
     const pty = manager.resume(sessionId, size);
-    // Register the output listener BEFORE repaint (design §8.4), then send the replay buffer.
+    // Register the output listener BEFORE repaint (design §8.4), then paint: the local replay buffer,
+    // or — for a devbox session — a fresh tmux capture (never the recorded cursor-relative bytes).
     conn.unsubscribe = pty.addOutputListener((bytes) => {
       conn.writer.write(ptyOutputFrame(sessionId, bytes));
     });
     conn.attachedSessionId = sessionId;
-    const replay = pty.replay();
-    if (replay.length) conn.writer.write(ptyOutputFrame(sessionId, replay));
+    const paint = await manager.repaintBytes(sessionId);
+    if (paint.length) conn.writer.write(ptyOutputFrame(sessionId, paint));
     return { ok: true, attached: sessionId };
   }
 

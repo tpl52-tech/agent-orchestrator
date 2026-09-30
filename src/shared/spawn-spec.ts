@@ -28,10 +28,12 @@ export interface SpawnRequest {
   resumeHandle?: string | null;
   seed?: string;
   seedIsTicket?: boolean;
-  // hook wiring:
+  // hook wiring — local (bun runs hook-notify.ts) OR remote (sh runs hook-notify.sh with the sessionId):
   bunPath: string; // process.execPath
   hookNotifyPath: string; // abs path to hook-notify.ts
-  sessionDir: string; // for env
+  sessionDir: string; // for env (local only)
+  /** when set, the agent is remote: hooks call `sh <remoteHookPath> <sessionId> <event>` (design §9.2). */
+  remoteHookPath?: string;
   // claude extras:
   appendSystemPrompt?: string;
   claudeMdExcludes?: string[];
@@ -63,11 +65,14 @@ const CLAUDE_PERMISSION_MODE: Record<Permissions, string> = {
   "full-access": "bypassPermissions",
 };
 
+function hookCommand(req: SpawnRequest, event: string): string {
+  return req.remoteHookPath
+    ? `sh ${req.remoteHookPath} ${req.sessionId} ${event}` // remote hook takes <sessionId> <event> (§9.2)
+    : `${req.bunPath} ${req.hookNotifyPath} ${event}`;
+}
+
 function claudeSettings(req: SpawnRequest): string {
-  const cmd = (event: string) => ({
-    type: "command",
-    command: `${req.bunPath} ${req.hookNotifyPath} ${event}`,
-  });
+  const cmd = (event: string) => ({ type: "command", command: hookCommand(req, event) });
   const settings: Record<string, unknown> = {
     hooks: {
       Notification: [
@@ -87,7 +92,10 @@ function claudeSettings(req: SpawnRequest): string {
 export function buildSpawnSpec(req: SpawnRequest): SpawnSpec {
   const model = req.model && req.model !== "auto" ? req.model : null;
   const env: Record<string, string> = { AO_SESSION_ID: req.sessionId, AO_SESSION_DIR: req.sessionDir };
-  const deferSeedPrompt = !!req.seedIsTicket && req.tool === "claude" && !req.isResume && !!req.seed;
+  // Deferred seed delivery is LOCAL-only (it drives the local PTY's quiescence, §10.7); remote seed
+  // typing goes over the awaited ssh nudge hop, which lands with the nudge path (build step 6).
+  const deferSeedPrompt =
+    !!req.seedIsTicket && req.tool === "claude" && !req.isResume && !!req.seed && !req.remoteHookPath;
 
   switch (req.tool) {
     case "claude": {
@@ -118,7 +126,9 @@ export function buildSpawnSpec(req: SpawnRequest): SpawnSpec {
         argv.push("--dangerously-bypass-approvals-and-sandbox");
       }
       // Hook: codex appends its own JSON event as the last arg.
-      argv.push("-c", `notify=["${req.bunPath}","${req.hookNotifyPath}","codex-event"]`);
+      argv.push("-c", req.remoteHookPath
+        ? `notify=["sh","${req.remoteHookPath}","${req.sessionId}","codex-event"]`
+        : `notify=["${req.bunPath}","${req.hookNotifyPath}","codex-event"]`);
       if (req.seed && !req.isResume) argv.push(req.seed);
       return { argv, deferSeedPrompt: false, env };
     }

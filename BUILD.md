@@ -38,9 +38,15 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       real devbox** — the daemon wiring is in place and the command strings are unit-tested, but live
       validation is pending. Deferred: remote worktree provisioning, remote deferred-seed delivery (the
       ssh nudge hop, step 6), and the capture-pane paint-sequence refinements (§8.4).
-- [ ] **5. Work items.** Branch linking, batched GitHub GraphQL query, derived states,
-      retirement, focus classification, focus view. — `src/daemon/monitors/work-item.ts`,
-      `src/shared/focus.ts`.
+- [x] **5. Work items.** Branch linking + polling cadence, per-PR GraphQL fetch, the full derived
+      states (CI/greenlight/thermo/codex/CTO/review-bot/unresolved/ack), retirement, focus
+      classification, PR rows in the dashboard, and the focus view. — `src/shared/focus.ts`,
+      `src/daemon/{pr-derive,github,monitors/work-item}.ts`. Covered by `bun test` (focus rules,
+      PR-state derivation over fixtures, retirement + PR-ref parsing, the work_items store, and the gh
+      command builders). **GitHub I/O (`gh`) is exercised only against a real repo.** Deferred: the CTO
+      cross-identity/audit disambiguation and review-bot "approved" (need the audit log, step 7),
+      devbox branch-over-ssh, the batched aliased multi-branch query, the manual review actions
+      (codex-review/cto-review/bump-cto/merge — builders exist), and the Linear monitor (§12.6).
 - [ ] **6. Nudges.** Nudge delivery with the framing rules and pane guards; manual nudge
       form. — `src/daemon/nudge/index.ts`.
 - [ ] **7. Autonomy.** Policy + actuator + audit log + window + kill switch + dry-run;

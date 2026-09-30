@@ -16,6 +16,7 @@
 import { Database } from "bun:sqlite";
 import type {
   Task, TaskStatus, Session, Tool, Location, Permissions, Effort,
+  WorkItem, WorkItemKind, WorkItemLifecycle, WorkItemSource,
 } from "../shared/types.ts";
 
 export const PRAGMAS = ["PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON"];
@@ -420,6 +421,134 @@ export class Store {
   removeSession(id: string): void {
     this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
   }
+
+  // --- work items ----------------------------------------------------------
+
+  getWorkItem(sessionId: string, externalKey: string): WorkItem | null {
+    const row = this.db.query("SELECT * FROM work_items WHERE session_id = ? AND external_key = ?")
+      .get(sessionId, externalKey) as Row | null;
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  getWorkItemById(id: string): WorkItem | null {
+    const row = this.db.query("SELECT * FROM work_items WHERE id = ?").get(id) as Row | null;
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  listWorkItemsBySession(sessionId: string, includeRetired = false): WorkItem[] {
+    const sql = includeRetired
+      ? "SELECT * FROM work_items WHERE session_id = ? ORDER BY created_at ASC"
+      : "SELECT * FROM work_items WHERE session_id = ? AND lifecycle != 'retired' ORDER BY created_at ASC";
+    return (this.db.query(sql).all(sessionId) as Row[]).map(rowToWorkItem);
+  }
+
+  listActiveWorkItems(): WorkItem[] {
+    return (this.db.query("SELECT * FROM work_items WHERE lifecycle != 'retired' ORDER BY created_at ASC")
+      .all() as Row[]).map(rowToWorkItem);
+  }
+
+  /** All rows sharing an external_key (design §6: lookups widen to "all siblings"). */
+  siblingsOf(externalKey: string): WorkItem[] {
+    return (this.db.query("SELECT * FROM work_items WHERE external_key = ?").all(externalKey) as Row[])
+      .map(rowToWorkItem);
+  }
+
+  /**
+   * Insert or update a work item, keyed by UNIQUE(session_id, external_key). Sets head_observed_at the
+   * first time a new head_sha is seen (anchors the delayed CTO nudge, §6). Returns the row.
+   */
+  upsertWorkItem(input: { sessionId: string; kind: WorkItemKind; externalKey: string } & Partial<WorkItem>): WorkItem {
+    const now = Date.now();
+    const existing = this.getWorkItem(input.sessionId, input.externalKey);
+
+    let headObservedAt = existing?.headObservedAt ?? null;
+    if (input.headSha !== undefined && (!existing || existing.headSha !== input.headSha)) {
+      headObservedAt = now;
+    }
+
+    if (!existing) {
+      this.db.run(
+        `INSERT INTO work_items
+           (id, session_id, kind, external_key, lifecycle, source, failed_checks,
+            outstanding_reviewer_tags, tickets, is_draft, thermo_cycles, greenlight_state,
+            unresolved_comments, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, '[]', '[]', '[]', 0, 0, 'absent', 0, ?, ?)`,
+        [crypto.randomUUID(), input.sessionId, input.kind, input.externalKey, input.source ?? "auto", now, now],
+      );
+    }
+
+    const id = (existing?.id) ?? (this.getWorkItem(input.sessionId, input.externalKey)!.id);
+    this.applyWorkItemUpdate(id, input, headObservedAt, now);
+    return this.getWorkItemById(id)!;
+  }
+
+  private applyWorkItemUpdate(id: string, input: Partial<WorkItem>, headObservedAt: number | null, now: number): void {
+    const sets: string[] = ["updated_at = ?", "last_polled_at = ?", "head_observed_at = ?"];
+    const vals: unknown[] = [now, now, headObservedAt];
+    for (const [key, spec] of Object.entries(WI_MAP)) {
+      const v = (input as Record<string, unknown>)[key];
+      if (v === undefined) continue;
+      sets.push(`${spec.col} = ?`);
+      vals.push(spec.json ? JSON.stringify(v) : spec.bool ? (v ? 1 : 0) : (v as unknown));
+    }
+    vals.push(id);
+    this.db.run(`UPDATE work_items SET ${sets.join(", ")} WHERE id = ?`, vals as any);
+  }
+
+  setWorkItemLifecycle(id: string, lifecycle: WorkItemLifecycle, retiredAt: number | null = null): void {
+    this.db.run("UPDATE work_items SET lifecycle = ?, retired_at = ?, updated_at = ? WHERE id = ?",
+      [lifecycle, retiredAt, Date.now(), id]);
+  }
+
+  removeWorkItem(id: string): void {
+    this.db.run("DELETE FROM work_items WHERE id = ?", [id]);
+  }
+
+  /** Append a field transition (design §6 work_item_events). */
+  appendWorkItemEvent(workItemId: string, field: string, from: string | null, to: string | null): void {
+    this.db.run(`INSERT INTO work_item_events (work_item_id, at, field, "from", "to") VALUES (?, ?, ?, ?, ?)`,
+      [workItemId, Date.now(), field, from, to]);
+  }
+}
+
+/** camelCase WorkItem field -> column, with JSON / boolean coercion, for updatable columns. */
+const WI_MAP: Record<string, { col: string; json?: boolean; bool?: boolean }> = {
+  repo: { col: "repo" }, number: { col: "number" }, url: { col: "url" }, title: { col: "title" },
+  branch: { col: "branch" }, lifecycle: { col: "lifecycle" }, prState: { col: "pr_state" },
+  isDraft: { col: "is_draft", bool: true }, ciState: { col: "ci_state" },
+  failedChecks: { col: "failed_checks", json: true }, reviewState: { col: "review_state" },
+  mergeable: { col: "mergeable" }, headSha: { col: "head_sha" }, headCommittedAt: { col: "head_committed_at" },
+  codexState: { col: "codex_state" }, codexReviewedSha: { col: "codex_reviewed_sha" },
+  ctoState: { col: "cto_state" }, ctoReviewedAt: { col: "cto_reviewed_at" }, ctoReviewedSha: { col: "cto_reviewed_sha" },
+  reviewBotState: { col: "review_bot_state" }, reviewBotAt: { col: "review_bot_at" },
+  thermoGrade: { col: "thermo_grade" }, thermoCycles: { col: "thermo_cycles" },
+  greenlightState: { col: "greenlight_state" }, unresolvedComments: { col: "unresolved_comments" },
+  operatorAckedAt: { col: "operator_acked_at" },
+  outstandingReviewerTags: { col: "outstanding_reviewer_tags", json: true },
+  tickets: { col: "tickets", json: true }, source: { col: "source" },
+  remoteUpdatedAt: { col: "remote_updated_at" }, retiredAt: { col: "retired_at" },
+};
+
+const parseJsonArr = (v: unknown): string[] => {
+  try { const a = JSON.parse(String(v ?? "[]")); return Array.isArray(a) ? a : []; } catch { return []; }
+};
+
+function rowToWorkItem(r: Row): WorkItem {
+  return {
+    id: r.id, sessionId: r.session_id, kind: r.kind as WorkItemKind, externalKey: r.external_key,
+    repo: r.repo, number: r.number, url: r.url, title: r.title, branch: r.branch,
+    lifecycle: r.lifecycle as WorkItemLifecycle, prState: r.pr_state, isDraft: b(r.is_draft),
+    ciState: r.ci_state, failedChecks: parseJsonArr(r.failed_checks), reviewState: r.review_state,
+    mergeable: r.mergeable, headSha: r.head_sha, headCommittedAt: r.head_committed_at,
+    headObservedAt: r.head_observed_at, codexState: r.codex_state, codexReviewedSha: r.codex_reviewed_sha,
+    ctoState: r.cto_state, ctoReviewedAt: r.cto_reviewed_at, ctoReviewedSha: r.cto_reviewed_sha,
+    reviewBotState: r.review_bot_state, reviewBotAt: r.review_bot_at, thermoGrade: r.thermo_grade,
+    thermoCycles: r.thermo_cycles, greenlightState: r.greenlight_state,
+    unresolvedComments: r.unresolved_comments, operatorAckedAt: r.operator_acked_at,
+    outstandingReviewerTags: parseJsonArr(r.outstanding_reviewer_tags), tickets: parseJsonArr(r.tickets),
+    source: r.source as WorkItemSource, createdAt: r.created_at, updatedAt: r.updated_at,
+    remoteUpdatedAt: r.remote_updated_at, retiredAt: r.retired_at, lastPolledAt: r.last_polled_at,
+  };
 }
 
 function rowToTask(r: Row): Task {

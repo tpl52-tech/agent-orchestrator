@@ -16,6 +16,7 @@ import { loadOperatorConfig } from "../shared/config.ts";
 import { Store } from "./store.ts";
 import { createSessionManager, type SessionManager } from "./session-manager.ts";
 import { createStatusTracker, type StatusTracker } from "./monitors/status.ts";
+import { startWorkItemMonitor, type WorkItemMonitor } from "./monitors/work-item.ts";
 import { RemoteAgents } from "./remote-box.ts";
 import { startUdsServer, type UdsServer } from "./uds-server.ts";
 
@@ -23,6 +24,7 @@ export interface Daemon {
   store: Store;
   manager: SessionManager;
   tracker: StatusTracker;
+  monitor: WorkItemMonitor;
   server: UdsServer;
   socketPath: string;
   stop(): void;
@@ -50,7 +52,12 @@ export function startDaemon(home = stateHome()): Daemon {
     : undefined;
 
   const manager = createSessionManager(store, tracker, config, home, remote);
-  server = startUdsServer(p.socket, { store, manager });
+  const monitor = startWorkItemMonitor({
+    store, manager, config,
+    emit: () => server.broadcast({ type: "workitems.changed", data: {} }),
+    isBusy: () => server.isBusy(),
+  });
+  server = startUdsServer(p.socket, { store, manager, monitor });
 
   // Broadcast runtime status transitions to all clients (design §8.2 manager fan-out).
   tracker.onChange(({ sessionId, status }) =>
@@ -64,10 +71,12 @@ export function startDaemon(home = stateHome()): Daemon {
     store,
     manager,
     tracker,
+    monitor,
     server,
     socketPath: p.socket,
     stop() {
       server.stop();
+      monitor.stop();
       tracker.stop();
       manager.shutdown();
       store.close();

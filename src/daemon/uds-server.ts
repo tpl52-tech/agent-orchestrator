@@ -32,6 +32,8 @@ export interface UdsServerDeps {
   manager: SessionManager;
   monitor: WorkItemMonitor;
   nudge: NudgeDelivery;
+  autonomyState: () => unknown;
+  extendAutonomy: (hours: number) => { until: number };
 }
 
 export interface UdsServer {
@@ -193,6 +195,12 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
         store.removeWorkItem(p.id);
         return { ok: true };
 
+      // --- autonomy ---
+      case "autonomy.log":
+        return store.listActions(p.limit ?? 40);
+      case "autonomy.extend":
+        return deps.extendAutonomy(Number(p.hours ?? 2));
+
       // --- snapshot ---
       case "snapshot.get":
         return snapshot();
@@ -227,7 +235,7 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
     const sessions = store.listSessions({ includeClosed: false })
       .map((s) => ({ ...s, status: manager.status(s.id) }));
     const workItems = store.listActiveWorkItems();
-    return { tasks, sessions, workItems, now: Date.now() };
+    return { tasks, sessions, workItems, autonomy: deps.autonomyState(), now: Date.now() };
   }
 
   return {

@@ -17,6 +17,7 @@ import { Database } from "bun:sqlite";
 import type {
   Task, TaskStatus, Session, Tool, Location, Permissions, Effort,
   WorkItem, WorkItemKind, WorkItemLifecycle, WorkItemSource,
+  AutonomyAction, AutonomyDecision, AutonomyStatus,
 } from "../shared/types.ts";
 
 export const PRAGMAS = ["PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON"];
@@ -509,6 +510,90 @@ export class Store {
     this.db.run(`INSERT INTO work_item_events (work_item_id, at, field, "from", "to") VALUES (?, ?, ?, ?, ?)`,
       [workItemId, Date.now(), field, from, to]);
   }
+
+  // --- autonomy audit log (design §6, §13.5) -------------------------------
+
+  getAction(dedupeKey: string): AutonomyAction | null {
+    const row = this.db.query("SELECT * FROM autonomy_actions WHERE dedupe_key = ?").get(dedupeKey) as Row | null;
+    return row ? rowToAction(row) : null;
+  }
+
+  /**
+   * Record an autonomy attempt (design §13.5). The dedupe_key is UNIQUE: a new row SUPERSEDES an
+   * existing dry-run/failed/undelivered/suppressed row, but NEVER a terminal performed/queued/cancelled
+   * one. `failed` increments attempts; `undelivered` carries attempts unchanged. Returns the row.
+   */
+  recordAction(input: {
+    action: AutonomyDecision; dedupeKey: string; status: AutonomyStatus;
+    workItemId?: string | null; sessionId?: string | null; gate?: string | null;
+    reason?: string | null; payload?: unknown;
+  }): AutonomyAction {
+    const now = Date.now();
+    const existing = this.getAction(input.dedupeKey);
+    const TERMINAL = new Set<AutonomyStatus>(["performed", "queued", "cancelled"]);
+    if (existing && TERMINAL.has(existing.status)) return existing; // never overwrite a terminal row
+
+    const attempts = input.status === "failed" ? (existing?.attempts ?? 0) + 1 : (existing?.attempts ?? 0);
+    const payloadJson = JSON.stringify(input.payload ?? {});
+    if (existing) {
+      this.db.run(
+        `UPDATE autonomy_actions SET action=?, status=?, gate=?, reason=?, payload_json=?, attempts=?, created_at=?
+           WHERE dedupe_key=?`,
+        [input.action, input.status, input.gate ?? null, input.reason ?? null, payloadJson, attempts, now, input.dedupeKey],
+      );
+    } else {
+      this.db.run(
+        `INSERT INTO autonomy_actions
+           (id, work_item_id, session_id, action, dedupe_key, status, gate, reason, payload_json, created_at, attempts)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [crypto.randomUUID(), input.workItemId ?? null, input.sessionId ?? null, input.action,
+         input.dedupeKey, input.status, input.gate ?? null, input.reason ?? null, payloadJson, now, attempts],
+      );
+    }
+    return this.getAction(input.dedupeKey)!;
+  }
+
+  /** True iff a terminal row (performed/queued/cancelled) exists for this key (gate 8, §13.5). */
+  hasTerminalAction(dedupeKey: string): boolean {
+    const a = this.getAction(dedupeKey);
+    return !!a && (a.status === "performed" || a.status === "queued" || a.status === "cancelled");
+  }
+
+  /** Failed-attempt count for a key (gate 7: >= 2 => already-attempted, §13.5). */
+  failedAttemptCount(dedupeKey: string): number {
+    const a = this.getAction(dedupeKey);
+    return a && a.status === "failed" ? a.attempts : 0;
+  }
+
+  /**
+   * Count "acted" rows (performed/queued/dry-run) in a trailing window, for the rate limits (§13.5).
+   * Excludes manual settlement rows (their keys contain ":" segments starting with manual — we key
+   * manual rows as `<action>:<uuid>` / `manual:*`, so filter those out by prefix).
+   */
+  countActed(sinceMs: number, filter: { sessionId?: string; externalKey?: string; action?: string } = {}): number {
+    const where = ["status IN ('performed','queued','dry-run')", "created_at >= ?", "dedupe_key NOT LIKE 'manual%'"];
+    const vals: unknown[] = [sinceMs];
+    if (filter.sessionId) { where.push("session_id = ?"); vals.push(filter.sessionId); }
+    if (filter.externalKey) { where.push("dedupe_key LIKE ?"); vals.push(`%:${filter.externalKey}:%`); }
+    if (filter.action) { where.push("action = ?"); vals.push(filter.action); }
+    const row = this.db.query(`SELECT COUNT(*) AS n FROM autonomy_actions WHERE ${where.join(" AND ")}`)
+      .get(...(vals as any[])) as Row;
+    return row.n as number;
+  }
+
+  /** Recent audit rows for the activity log (design §19 `A`). */
+  listActions(limit = 40): AutonomyAction[] {
+    return (this.db.query("SELECT * FROM autonomy_actions ORDER BY created_at DESC LIMIT ?").all(limit) as Row[])
+      .map(rowToAction);
+  }
+}
+
+function rowToAction(r: Row): AutonomyAction {
+  return {
+    id: r.id, workItemId: r.work_item_id, sessionId: r.session_id, action: r.action as AutonomyDecision,
+    dedupeKey: r.dedupe_key, status: r.status as AutonomyStatus, gate: r.gate, reason: r.reason,
+    payloadJson: r.payload_json, createdAt: r.created_at, attempts: r.attempts,
+  };
 }
 
 /** camelCase WorkItem field -> column, with JSON / boolean coercion, for updatable columns. */

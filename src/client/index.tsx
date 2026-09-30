@@ -18,10 +18,11 @@ import { paths } from "../shared/paths.ts";
 import { statusStyle, taskRollupStatus } from "../shared/status.ts";
 import { classifyWorkItem, type WorkItemFocus } from "../shared/focus.ts";
 import { DEFAULT_REVIEW_POLICY } from "../shared/profile.ts";
-import type { Task, Session, SessionStatus, WorkItem, CodexReviewState, CtoState } from "../shared/types.ts";
+import type { Task, Session, SessionStatus, WorkItem, CodexReviewState, CtoState, AutonomyAction } from "../shared/types.ts";
 
 type SessionView = Session & { status: SessionStatus };
-interface Snapshot { tasks: Task[]; sessions: SessionView[]; workItems: WorkItem[]; now?: number }
+interface AutonomyState { enabled: boolean; dryRun: boolean; killed: boolean; window: string }
+interface Snapshot { tasks: Task[]; sessions: SessionView[]; workItems: WorkItem[]; autonomy?: AutonomyState; now?: number }
 type Action = { type: "quit" } | { type: "attach"; sessionId: string };
 
 type Row =
@@ -148,6 +149,35 @@ function FocusView({ snap, now }: { snap: Snapshot; now: number }) {
   );
 }
 
+const ACTION_COLOR: Record<string, string> = {
+  performed: "green", queued: "cyan", "dry-run": "gray", suppressed: "gray", failed: "red",
+  undelivered: "yellow", cancelled: "gray",
+};
+
+function ActivityView({ client }: { client: DaemonClient }) {
+  const [rows, setRows] = useState<AutonomyAction[]>([]);
+  useEffect(() => {
+    const load = () => client.request<AutonomyAction[]>("autonomy.log", { limit: 30 }).then(setRows).catch(() => {});
+    load();
+    const t = setInterval(load, 2000);
+    return () => clearInterval(t);
+  }, [client]);
+  return (
+    <Box flexDirection="column">
+      <Text bold>activity <Text dimColor>(A to close)</Text></Text>
+      {rows.length === 0 && <Text dimColor>no autonomy actions yet</Text>}
+      {rows.map((r) => (
+        <Text key={r.id}>
+          <Text color={ACTION_COLOR[r.status] ?? undefined}>{r.status.padEnd(11)}</Text>
+          {" "}{r.action}
+          {r.gate ? <Text dimColor> [{r.gate}]</Text> : null}
+          {r.reason ? <Text dimColor> · {r.reason}</Text> : null}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
 function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: Action) => void }) {
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
@@ -157,6 +187,7 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
   const [nudgeTarget, setNudgeTarget] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [focusOpen, setFocusOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const refresh = async () => {
     try { setSnap(await client.request<Snapshot>("snapshot.get")); }
@@ -167,7 +198,8 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
     void refresh();
     const t = setInterval(() => void refresh(), 1000);
     const off = client.on((ev) => {
-      if (ev.type === "session.status" || ev.type === "session.exit" || ev.type === "workitems.changed") {
+      if (ev.type === "session.status" || ev.type === "session.exit" ||
+          ev.type === "workitems.changed" || ev.type === "autonomy.acted") {
         void refresh();
       }
     });
@@ -202,7 +234,9 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
 
     if (input === "q" || (key.ctrl && input === "c")) { onAction({ type: "quit" }); exit(); return; }
     if (input === "f") { setFocusOpen((v) => !v); return; }
-    if (focusOpen) return; // focus view is read-only
+    if (input === "A") { setActivityOpen((v) => !v); return; }
+    if (input === "E") { client.request("autonomy.extend", { hours: 2 }).then(refresh).catch(() => {}); return; }
+    if (focusOpen || activityOpen) return; // overlays are read-only
     if (key.upArrow || input === "k") { setCursor((c) => Math.max(0, c - 1)); return; }
     if (key.downArrow || input === "j") { setCursor((c) => Math.min(rows.length - 1, c + 1)); return; }
     if (input === "r") { void refresh(); return; }
@@ -238,11 +272,17 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
   const openTasks = snap.tasks.filter((t) => t.status === "open").length;
 
   if (focusOpen) return <FocusView snap={snap} now={snap.now ?? Date.now()} />;
+  if (activityOpen) return <ActivityView client={client} />;
+
+  const auto = snap.autonomy;
+  const autoBadge = !auto ? "" : (auto.killed || !auto.enabled) ? "off" : auto.dryRun ? "·dry" : "auto";
+  const autoColor = autoBadge === "auto" ? "green" : autoBadge === "·dry" ? "yellow" : "gray";
 
   return (
     <Box flexDirection="column">
       <Text bold>
         agent-orchestrator <Text dimColor>· {openTasks} open · {snap.sessions.length} sessions · {snap.workItems.length} PRs</Text>
+        {auto ? <Text> · <Text color={autoColor}>{autoBadge}</Text> <Text dimColor>{auto.window}</Text></Text> : null}
       </Text>
       {rows.length === 0 && <Text dimColor>no tasks yet — press n to create one</Text>}
       {rows.map((row, idx) =>
@@ -255,7 +295,7 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
       {mode === "newTask" && <Text>new task name: {draft}▌</Text>}
       {mode === "nudge" && <Text color="magenta">nudge: {draft}▌</Text>}
       {error && <Text color="red">{error}</Text>}
-      <Text dimColor>↑/↓ · enter attach/open · n task · a agent · m nudge · i planning · x close · f focus · r · q</Text>
+      <Text dimColor>↑/↓ · enter attach/open · n task · a agent · m nudge · i planning · x close · f focus · A activity · E extend · r · q</Text>
     </Box>
   );
 }

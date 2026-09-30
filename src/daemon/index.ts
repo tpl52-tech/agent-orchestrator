@@ -10,14 +10,16 @@
  * steps (see BUILD.md); their ordered boot sequence is documented in daemon/index.ts history / §5.1.
  */
 
-import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { paths, stateHome } from "../shared/paths.ts";
-import { loadOperatorConfig } from "../shared/config.ts";
+import { loadOperatorConfig, BUILTIN_DEFAULTS } from "../shared/config.ts";
+import { windowLabel, parseExtensionDeadline, AUTONOMY_EXTENSION_CAP_MS, type WindowConfig } from "../shared/autonomy-window.ts";
 import { Store } from "./store.ts";
 import { createSessionManager, type SessionManager } from "./session-manager.ts";
 import { createStatusTracker, type StatusTracker } from "./monitors/status.ts";
 import { startWorkItemMonitor, type WorkItemMonitor } from "./monitors/work-item.ts";
 import { createNudgeDelivery, type NudgeDelivery } from "./nudge/index.ts";
+import { startAutonomy, parseAutonomyConfig, type AutonomyEngine } from "./autonomy/index.ts";
 import { RemoteAgents } from "./remote-box.ts";
 import { startUdsServer, type UdsServer } from "./uds-server.ts";
 
@@ -27,6 +29,7 @@ export interface Daemon {
   tracker: StatusTracker;
   monitor: WorkItemMonitor;
   nudge: NudgeDelivery;
+  autonomy: AutonomyEngine;
   server: UdsServer;
   socketPath: string;
   stop(): void;
@@ -63,7 +66,35 @@ export function startDaemon(home = stateHome()): Daemon {
     emit: () => server.broadcast({ type: "workitems.changed", data: {} }),
     isBusy: () => server.isBusy(),
   });
-  server = startUdsServer(p.socket, { store, manager, monitor, nudge });
+
+  const autonomyConfig = parseAutonomyConfig();
+  const autonomy = startAutonomy({
+    store, tracker, nudge, config: autonomyConfig, operatorConfig: config, home,
+    emit: () => server.broadcast({ type: "autonomy.acted", data: {} }),
+  });
+
+  const windowCfg: WindowConfig = {
+    timeZone: BUILTIN_DEFAULTS.autonomyTimeZone,
+    startHour: BUILTIN_DEFAULTS.autonomyStartHour,
+    endHour: BUILTIN_DEFAULTS.autonomyEndHour,
+  };
+  const extensionUntil = (): number | null => {
+    try { return existsSync(p.autonomyUntil) ? parseExtensionDeadline(readFileSync(p.autonomyUntil, "utf8"), Date.now()) : null; }
+    catch { return null; }
+  };
+  const autonomyState = () => ({
+    enabled: autonomyConfig.enabled,
+    dryRun: autonomyConfig.dryRun,
+    killed: !autonomyConfig.enabled || existsSync(p.autonomyOff),
+    window: windowLabel(Date.now(), windowCfg, extensionUntil()),
+  });
+  const extendAutonomy = (hours: number) => {
+    const until = Date.now() + Math.min(Math.max(hours, 0) * 3_600_000, AUTONOMY_EXTENSION_CAP_MS);
+    writeFileSync(p.autonomyUntil, String(until));
+    return { until };
+  };
+
+  server = startUdsServer(p.socket, { store, manager, monitor, nudge, autonomyState, extendAutonomy });
 
   // Broadcast runtime status transitions to all clients (design §8.2 manager fan-out).
   tracker.onChange(({ sessionId, status }) =>
@@ -79,10 +110,12 @@ export function startDaemon(home = stateHome()): Daemon {
     tracker,
     monitor,
     nudge,
+    autonomy,
     server,
     socketPath: p.socket,
     stop() {
       server.stop();
+      autonomy.stop();
       monitor.stop();
       nudge.stop();
       tracker.stop();

@@ -56,9 +56,16 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       transport over the awaited ssh hop (guards + dispatch are ready; the ssh send-keys I/O is a
       follow-up), verification/settlement-row promotion + boot redelivery (§5.2), and the autonomy
       settlement checklist (§13.8, step 7).
-- [ ] **7. Autonomy.** Policy + actuator + audit log + window + kill switch + dry-run;
-      activity log. — `src/daemon/autonomy/{policy,actuator,index}.ts`,
-      `src/shared/autonomy-window.ts`.
+- [x] **7. Autonomy.** The pure policy engine (rule table §13.4), the actuator gate chain (§13.5, never
+      throws), the audit-log store (dedupe/rate-limit/supersede §6), the acting window + file kill switch
+      + 12h extension + dry-run (§13.7), env config (§13.6), and the control loop reading window/kill
+      switch live — plus the activity log view + autonomy badge. — `src/daemon/autonomy/*`,
+      `src/shared/autonomy-window.ts`. Covered by `bun test` (window, config, dedupe keys, the audit
+      store, the rule table, every gate in order, and an end-to-end loop). Simplifications (documented):
+      agent ACTIVITY comes from the status tracker (the §10.4 introspection probe — fidelity
+      authoritative, endedWithQuestion — is a later gap, so rule 5 blocked-question stays dormant); the
+      GitHub delivery of request-codex/cto is live-only; alerts (alert-human decisions) are recorded but
+      dispatched in step 8.
 - [ ] **8. Alerts / accounting.** Alerts + Slack narrator; usage ledger; quota probes. —
       `src/daemon/{alerts,monitors/usage,monitors/quota}.ts`, `src/shared/pricing.ts`,
       `deploy/alerts/narrate.sh`.

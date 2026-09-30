@@ -152,8 +152,9 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
   const [cursor, setCursor] = useState(0);
-  const [mode, setMode] = useState<"list" | "newTask">("list");
+  const [mode, setMode] = useState<"list" | "newTask" | "nudge">("list");
   const [draft, setDraft] = useState("");
+  const [nudgeTarget, setNudgeTarget] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [focusOpen, setFocusOpen] = useState(false);
 
@@ -184,12 +185,14 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
       : undefined;
 
   useInput((input, key) => {
-    if (mode === "newTask") {
-      if (key.escape) { setMode("list"); setDraft(""); return; }
+    if (mode === "newTask" || mode === "nudge") {
+      if (key.escape) { setMode("list"); setDraft(""); setNudgeTarget(null); return; }
       if (key.return) {
-        const name = draft.trim();
-        setMode("list"); setDraft("");
-        if (name) client.request("task.create", { name }).then(refresh).catch(() => {});
+        const text = draft.trim();
+        const m = mode; const target = nudgeTarget;
+        setMode("list"); setDraft(""); setNudgeTarget(null);
+        if (text && m === "newTask") client.request("task.create", { name: text }).then(refresh).catch(() => {});
+        if (text && m === "nudge" && target) client.request("session.nudge", { sessionId: target, body: text }).catch((e) => setError(String(e)));
         return;
       }
       if (key.backspace || key.delete) { setDraft((d) => d.slice(0, -1)); return; }
@@ -223,6 +226,8 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
 
     if (current?.kind === "session") {
       if (key.return) { onAction({ type: "attach", sessionId: current.session.id }); exit(); return; }
+      if (input === "m") { setMode("nudge"); setNudgeTarget(current.session.id); return; }
+      if (input === "i") { client.request("session.setPlanning", { id: current.session.id, planning: !current.session.planning }).then(refresh).catch(() => {}); return; }
       if (input === "x") {
         client.request("session.close", { sessionId: current.session.id }).then(refresh).catch(() => {});
         return;
@@ -248,8 +253,9 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
             : <PrRow key={`w-${row.item.id}`} item={row.item} selected={idx === clamped} />,
       )}
       {mode === "newTask" && <Text>new task name: {draft}▌</Text>}
+      {mode === "nudge" && <Text color="magenta">nudge: {draft}▌</Text>}
       {error && <Text color="red">{error}</Text>}
-      <Text dimColor>↑/↓ move · enter attach/open · n new task · a add agent · x close · f focus · r refresh · q quit</Text>
+      <Text dimColor>↑/↓ · enter attach/open · n task · a agent · m nudge · i planning · x close · f focus · r · q</Text>
     </Box>
   );
 }

@@ -47,8 +47,15 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       cross-identity/audit disambiguation and review-bot "approved" (need the audit log, step 7),
       devbox branch-over-ssh, the batched aliased multi-branch query, the manual review actions
       (codex-review/cto-review/bump-cto/merge — builders exist), and the Linear monitor (§12.6).
-- [ ] **6. Nudges.** Nudge delivery with the framing rules and pane guards; manual nudge
-      form. — `src/daemon/nudge/index.ts`.
+- [x] **6. Nudges.** The framing rules (body then Enter as SEPARATE writes; LF normalization; codex
+      bracketed-paste), the Claude-shaped pane guards + stranded-text recognition, the dispatch order,
+      the bounded per-session queue, local idle-gated delivery end-to-end, planning cancellation, and a
+      manual nudge composer. — `src/daemon/nudge/{framing,pane-guards,dispatch,queue,index}.ts`,
+      `src/client/index.tsx`. Covered by `bun test` (framing, all guards + stranded detection, dispatch
+      order, queue semantics, delivery via a real PTY, and the idle gate). Deferred: the devbox tmux
+      transport over the awaited ssh hop (guards + dispatch are ready; the ssh send-keys I/O is a
+      follow-up), verification/settlement-row promotion + boot redelivery (§5.2), and the autonomy
+      settlement checklist (§13.8, step 7).
 - [ ] **7. Autonomy.** Policy + actuator + audit log + window + kill switch + dry-run;
       activity log. — `src/daemon/autonomy/{policy,actuator,index}.ts`,
       `src/shared/autonomy-window.ts`.

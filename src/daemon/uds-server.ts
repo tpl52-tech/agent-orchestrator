@@ -17,6 +17,7 @@ import {
 } from "../shared/wire.ts";
 import type { Store } from "./store.ts";
 import type { SessionManager } from "./session-manager.ts";
+import type { WorkItemMonitor } from "./monitors/work-item.ts";
 
 interface ConnState {
   decoder: FrameDecoder;
@@ -28,6 +29,7 @@ interface ConnState {
 export interface UdsServerDeps {
   store: Store;
   manager: SessionManager;
+  monitor: WorkItemMonitor;
 }
 
 export interface UdsServer {
@@ -38,7 +40,7 @@ export interface UdsServer {
 }
 
 export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServer {
-  const { store, manager } = deps;
+  const { store, manager, monitor } = deps;
   const conns = new Set<ConnState>();
 
   if (existsSync(socketPath)) unlinkSync(socketPath); // stale socket, no liveness probe (§5.2)
@@ -170,12 +172,24 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
         detach(conn);
         return { ok: true };
 
+      // --- work items ---
+      case "workitem.list":
+        return p.sessionId ? store.listWorkItemsBySession(p.sessionId, !!p.includeRetired)
+          : store.listActiveWorkItems();
+      case "workitem.refresh":
+        return monitor.pollSession(p.sessionId).then(() => store.listWorkItemsBySession(p.sessionId));
+      case "workitem.add":
+        return monitor.addManual(p.sessionId, p.ref).then(() => store.listWorkItemsBySession(p.sessionId));
+      case "workitem.remove":
+        store.removeWorkItem(p.id);
+        return { ok: true };
+
       // --- snapshot ---
       case "snapshot.get":
         return snapshot();
 
       default:
-        throw new Error(`unsupported request in Milestone 1: ${req.type}`);
+        throw new Error(`unsupported request: ${req.type}`);
     }
   }
 
@@ -203,7 +217,8 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
     const tasks = store.listTasks(true);
     const sessions = store.listSessions({ includeClosed: false })
       .map((s) => ({ ...s, status: manager.status(s.id) }));
-    return { tasks, sessions, now: Date.now() };
+    const workItems = store.listActiveWorkItems();
+    return { tasks, sessions, workItems, now: Date.now() };
   }
 
   return {

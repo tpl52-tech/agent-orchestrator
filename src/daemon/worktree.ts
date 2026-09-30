@@ -30,6 +30,13 @@ export function gitToplevel(cwd: string): string | null {
   return r.code === 0 && r.stdout ? r.stdout : null;
 }
 
+/** The current branch of a worktree, or null (design §12.2 branch linking). */
+export function currentBranch(cwd: string): string | null {
+  const r = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const b = r.code === 0 ? r.stdout : "";
+  return b && b !== "HEAD" ? b : null; // "HEAD" = detached; treat as unlinked
+}
+
 /** Slugify a title for a branch name (design §7.4). */
 export function slug(title: string, max = 40): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, max) || "session";

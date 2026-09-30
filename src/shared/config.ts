@@ -131,6 +131,7 @@ export interface OperatorConfigLite {
   linearTeamKeys?: string[];
   ctoLogin?: string;
   ctoBotLogin?: string;
+  operatorLogin?: string;
   defaultProfileId?: string;
   repo?: string;
 }
@@ -162,6 +163,7 @@ export function loadOperatorConfig(home = stateHome()): OperatorConfigLite {
     linearTeamKeys: Array.isArray(raw.linearTeamKeys) ? raw.linearTeamKeys : undefined,
     ctoLogin: typeof raw.ctoLogin === "string" ? raw.ctoLogin : undefined,
     ctoBotLogin: typeof raw.ctoBotLogin === "string" ? raw.ctoBotLogin : undefined,
+    operatorLogin: typeof raw.operatorLogin === "string" ? raw.operatorLogin : undefined,
     defaultProfileId: typeof raw.defaultProfileId === "string" ? raw.defaultProfileId : undefined,
     repo: typeof raw.repo === "string" ? raw.repo : undefined,
   };

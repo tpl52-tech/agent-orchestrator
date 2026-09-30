@@ -16,27 +16,43 @@ import { connectDaemon, type DaemonClient } from "./daemon-client.ts";
 import { attachSession } from "./attach.ts";
 import { paths } from "../shared/paths.ts";
 import { statusStyle, taskRollupStatus } from "../shared/status.ts";
-import type { Task, Session, SessionStatus } from "../shared/types.ts";
+import { classifyWorkItem, type WorkItemFocus } from "../shared/focus.ts";
+import { DEFAULT_REVIEW_POLICY } from "../shared/profile.ts";
+import type { Task, Session, SessionStatus, WorkItem, CodexReviewState, CtoState } from "../shared/types.ts";
 
 type SessionView = Session & { status: SessionStatus };
-interface Snapshot { tasks: Task[]; sessions: SessionView[] }
+interface Snapshot { tasks: Task[]; sessions: SessionView[]; workItems: WorkItem[]; now?: number }
 type Action = { type: "quit" } | { type: "attach"; sessionId: string };
 
 type Row =
   | { kind: "task"; task: Task; rollup: SessionStatus | null }
-  | { kind: "session"; session: SessionView };
+  | { kind: "session"; session: SessionView }
+  | { kind: "workitem"; item: WorkItem };
 
 function buildRows(snap: Snapshot): Row[] {
   const rows: Row[] = [];
   for (const task of snap.tasks) {
     const sessions = snap.sessions.filter((x) => x.taskId === task.id);
     rows.push({ kind: "task", task, rollup: taskRollupStatus(sessions.map((s) => s.status)) });
-    for (const s of sessions) rows.push({ kind: "session", session: s });
+    for (const s of sessions) {
+      rows.push({ kind: "session", session: s });
+      for (const item of snap.workItems.filter((w) => w.sessionId === s.id)) {
+        rows.push({ kind: "workitem", item });
+      }
+    }
   }
   return rows;
 }
 
-const EMPTY: Snapshot = { tasks: [], sessions: [] };
+const EMPTY: Snapshot = { tasks: [], sessions: [], workItems: [] };
+
+const CODEX_GLYPH: Record<CodexReviewState, string> = {
+  approved: "✓", reviewed: "◐", requested: "…", none: "—",
+};
+const CTO_GLYPH: Record<CtoState, string> = {
+  approved: "✓", "stale-approval": "✓~", "changes-requested": "✗", "commented-after-approval": "✓!",
+  reviewed: "◐", requested: "…", none: "—",
+};
 
 function TaskRow({ row, selected }: { row: Extract<Row, { kind: "task" }>; selected: boolean }) {
   const marker = selected ? "› " : "  ";
@@ -67,6 +83,71 @@ function SessionRow({ s, selected }: { s: SessionView; selected: boolean }) {
   );
 }
 
+function CiCell({ item }: { item: WorkItem }) {
+  if (item.ciState === "success") return <Text color="green">CI ✓</Text>;
+  if (item.ciState === "pending") return <Text color="yellow">CI …</Text>;
+  if (item.ciState === "failure") {
+    const first = item.failedChecks[0] ?? "failing";
+    const extra = item.failedChecks.length > 1 ? `+${item.failedChecks.length - 1}` : "";
+    return <Text color="red">CI ✗ {first}{extra}</Text>;
+  }
+  return <Text dimColor>CI ?</Text>;
+}
+
+function PrRow({ item, selected }: { item: WorkItem; selected: boolean }) {
+  const marker = selected ? "› " : "  ";
+  const num = item.number != null ? `#${item.number}` : item.externalKey;
+  return (
+    <Text color={selected ? "cyan" : undefined}>
+      {marker}      <Text dimColor>{num}</Text> {item.title || ""}
+      {item.isDraft ? <Text dimColor> draft</Text> : null}
+      {item.mergeable === "CONFLICTING" ? <Text color="red"> conflicts</Text> : null}
+      {"  "}<CiCell item={item} />
+      {item.unresolvedComments > 0 ? <Text color="yellow">  {item.unresolvedComments} unresolved</Text> : null}
+      {item.codexState ? <Text dimColor>  codex {CODEX_GLYPH[item.codexState]}</Text> : null}
+      {item.ctoState ? <Text dimColor>  cto {CTO_GLYPH[item.ctoState]}</Text> : null}
+      {item.reviewBotState === "reviewed" ? <Text color="yellow">  rev ◐</Text> : null}
+    </Text>
+  );
+}
+
+// Section label + color, and which focuses fall into it (final-ready + ready-to-merge share one).
+const FOCUS_SECTIONS: Array<[label: string, color: string, focuses: WorkItemFocus[]]> = [
+  ["READY TO MERGE", "green", ["final-ready", "ready-to-merge"]],
+  ["NEEDS ATTENTION", "red", ["needs-attention"]],
+  ["WAITING REVIEW", "yellow", ["waiting-review"]],
+  ["IN PROGRESS", "gray", ["in-progress"]],
+];
+
+function FocusView({ snap, now }: { snap: Snapshot; now: number }) {
+  const byFocus = new Map<WorkItemFocus, WorkItem[]>();
+  for (const item of snap.workItems) {
+    if (item.kind !== "pr") continue;
+    const f = classifyWorkItem(item, now, DEFAULT_REVIEW_POLICY);
+    const list = byFocus.get(f) ?? [];
+    list.push(item);
+    byFocus.set(f, list);
+  }
+  return (
+    <Box flexDirection="column">
+      <Text bold>focus <Text dimColor>(f to close)</Text></Text>
+      {FOCUS_SECTIONS.map(([label, color, focuses]) => {
+        const items = focuses.flatMap((f) => byFocus.get(f) ?? []);
+        if (items.length === 0) return null;
+        return (
+          <Box key={label} flexDirection="column" marginTop={1}>
+            <Text color={color} bold>{label}</Text>
+            {items.map((it) => (
+              <Text key={it.id}>  {it.number != null ? `#${it.number}` : it.externalKey} {it.title || ""}</Text>
+            ))}
+          </Box>
+        );
+      })}
+      {snap.workItems.length === 0 && <Text dimColor>no PRs tracked yet</Text>}
+    </Box>
+  );
+}
+
 function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: Action) => void }) {
   const { exit } = useApp();
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
@@ -74,6 +155,7 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
   const [mode, setMode] = useState<"list" | "newTask">("list");
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [focusOpen, setFocusOpen] = useState(false);
 
   const refresh = async () => {
     try { setSnap(await client.request<Snapshot>("snapshot.get")); }
@@ -84,7 +166,9 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
     void refresh();
     const t = setInterval(() => void refresh(), 1000);
     const off = client.on((ev) => {
-      if (ev.type === "session.status" || ev.type === "session.exit") void refresh();
+      if (ev.type === "session.status" || ev.type === "session.exit" || ev.type === "workitems.changed") {
+        void refresh();
+      }
     });
     return () => { clearInterval(t); off(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -114,10 +198,17 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
     }
 
     if (input === "q" || (key.ctrl && input === "c")) { onAction({ type: "quit" }); exit(); return; }
+    if (input === "f") { setFocusOpen((v) => !v); return; }
+    if (focusOpen) return; // focus view is read-only
     if (key.upArrow || input === "k") { setCursor((c) => Math.max(0, c - 1)); return; }
     if (key.downArrow || input === "j") { setCursor((c) => Math.min(rows.length - 1, c + 1)); return; }
     if (input === "r") { void refresh(); return; }
     if (input === "n") { setMode("newTask"); return; }
+
+    if (current?.kind === "workitem") {
+      if (key.return && current.item.url) { openUrl(current.item.url); return; }
+      if (input === "x") { client.request("workitem.remove", { id: current.item.id }).then(refresh).catch(() => {}); return; }
+    }
 
     if (input === "a") {
       const task = taskFor();
@@ -141,20 +232,24 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
 
   const openTasks = snap.tasks.filter((t) => t.status === "open").length;
 
+  if (focusOpen) return <FocusView snap={snap} now={snap.now ?? Date.now()} />;
+
   return (
     <Box flexDirection="column">
       <Text bold>
-        agent-orchestrator <Text dimColor>· {openTasks} open · {snap.sessions.length} sessions</Text>
+        agent-orchestrator <Text dimColor>· {openTasks} open · {snap.sessions.length} sessions · {snap.workItems.length} PRs</Text>
       </Text>
       {rows.length === 0 && <Text dimColor>no tasks yet — press n to create one</Text>}
       {rows.map((row, idx) =>
         row.kind === "task"
           ? <TaskRow key={`t-${row.task.id}`} row={row} selected={idx === clamped} />
-          : <SessionRow key={`s-${row.session.id}`} s={row.session} selected={idx === clamped} />,
+          : row.kind === "session"
+            ? <SessionRow key={`s-${row.session.id}`} s={row.session} selected={idx === clamped} />
+            : <PrRow key={`w-${row.item.id}`} item={row.item} selected={idx === clamped} />,
       )}
       {mode === "newTask" && <Text>new task name: {draft}▌</Text>}
       {error && <Text color="red">{error}</Text>}
-      <Text dimColor>↑/↓ move · enter attach · n new task · a add agent · x close · r refresh · q quit</Text>
+      <Text dimColor>↑/↓ move · enter attach/open · n new task · a add agent · x close · f focus · r refresh · q quit</Text>
     </Box>
   );
 }

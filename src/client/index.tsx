@@ -183,8 +183,19 @@ async function ensureDaemon(): Promise<DaemonClient> {
   }
 }
 
+/** Open a URL in the OS browser (design §9.3: the client opens the Tailscale re-auth link). */
+function openUrl(url: string): void {
+  const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+  try { Bun.spawn([cmd, url], { stdio: ["ignore", "ignore", "ignore"] }).unref(); } catch { /* best effort */ }
+}
+
 export async function main(): Promise<void> {
   const client = await ensureDaemon();
+  // session.openUrl must be handled even during raw attach (the attach can block on the very
+  // Tailscale re-auth this event unblocks, design §8.4/§9.3).
+  const offOpenUrl = client.on((ev) => {
+    if (ev.type === "session.openUrl") openUrl((ev.data as { url: string }).url);
+  });
   try {
     for (;;) {
       const action = await runDashboard(client);
@@ -192,6 +203,7 @@ export async function main(): Promise<void> {
       if (action.type === "attach") await attachSession(client, action.sessionId);
     }
   } finally {
+    offOpenUrl();
     client.close();
   }
 }

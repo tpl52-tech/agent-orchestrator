@@ -126,6 +126,16 @@ describe("daemon <-> client end to end", () => {
     expect(existsSync(join(session.worktreePath!, "README.md"))).toBe(true);
   });
 
+  test("rejects a devbox spawn when no devbox is configured", async () => {
+    home = mkdtempSync(join(tmpdir(), "ao-test-"));
+    daemon = startDaemon(home);
+    client = await connectDaemon(daemon.socketPath);
+    const task = await client.request<Task>("task.create", { name: "t" });
+    await expect(client.request("session.spawn", {
+      taskId: task.id, tool: "claude", location: "devbox", cwd: "/home/ubuntu/repo", usesWorktree: false,
+    })).rejects.toThrow(/devbox/);
+  });
+
   test("rejects unsupported requests without crashing the daemon", async () => {
     home = mkdtempSync(join(tmpdir(), "ao-test-"));
     daemon = startDaemon(home);

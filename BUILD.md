@@ -29,8 +29,15 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       per-CLI argv, real-git worktree provisioning/removal/conflict, and a worktree-through-the-daemon
       spawn). Deferred: devbox spawning (step 4), codex rollout discovery (step 11), the four-layer
       strict `resolveConfig` with identity validation + defaults.json merge (later).
-- [ ] **4. Remote agents.** ssh+tmux recipe, remote hook, liveness, tmux repaint on attach,
-      Tailscale re-auth detection. — `src/shared/remote.ts`, `src/daemon/pty.ts`, `deploy/box/`.
+- [x] **4. Remote agents.** The ssh+tmux spawn recipe, remote status hook + events.log tail, 60s
+      liveness ticks, tmux capture-pane repaint on attach, Tailscale re-auth detection, and a
+      subprocess-with-deadline runner. — `src/shared/remote.ts`, `src/daemon/{ssh,remote-box,session-manager}.ts`,
+      `deploy/box/hook-notify.sh`. Covered by `bun test` (all command builders, Tailscale detection,
+      liveness classification, the deadline/kill runner, the remote-hook spawn form, and a
+      devbox-without-config guard). **The ssh/tmux integration is exercised end-to-end only against a
+      real devbox** — the daemon wiring is in place and the command strings are unit-tested, but live
+      validation is pending. Deferred: remote worktree provisioning, remote deferred-seed delivery (the
+      ssh nudge hop, step 6), and the capture-pane paint-sequence refinements (§8.4).
 - [ ] **5. Work items.** Branch linking, batched GitHub GraphQL query, derived states,
       retirement, focus classification, focus view. — `src/daemon/monitors/work-item.ts`,
       `src/shared/focus.ts`.

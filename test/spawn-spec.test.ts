@@ -86,6 +86,24 @@ describe("copilot (design §7.2)", () => {
   });
 });
 
+describe("remote hook wiring (design §9.2)", () => {
+  test("claude: hooks use the sh form and deferral is disabled on remote", () => {
+    const spec = buildSpawnSpec({
+      ...base, tool: "claude", resumeHandle: "U", seed: "s", seedIsTicket: true, remoteHookPath: "/rh/hook.sh",
+    });
+    expect(spec.deferSeedPrompt).toBe(false); // remote never defers (§10.7 delivery is the ssh hop, step 6)
+    const settings = JSON.parse(spec.argv[spec.argv.indexOf("--settings") + 1]!);
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe("sh /rh/hook.sh S123abcd done");
+    expect(settings.hooks.Notification[0].hooks[0].command).toBe("sh /rh/hook.sh S123abcd needs-input");
+    expect(spec.argv[spec.argv.length - 1]).toBe("s"); // seed carried positionally (not deferred)
+  });
+
+  test("codex: notify uses the sh form with the sessionId", () => {
+    const spec = buildSpawnSpec({ ...base, tool: "codex", remoteHookPath: "/rh/hook.sh" });
+    expect(spec.argv).toContain(`notify=["sh","/rh/hook.sh","S123abcd","codex-event"]`);
+  });
+});
+
 test("openrouter is in-process, not argv", () => {
   expect(() => buildSpawnSpec({ ...base, tool: "openrouter" })).toThrow(/in-process/);
 });

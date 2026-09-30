@@ -133,6 +133,8 @@ export interface StatusTracker {
   register(sessionId: string): void;
   onOutput(sessionId: string): void;
   onExit(sessionId: string, status: ExitStatus): void;
+  /** Feed a hook event from an external source (remote agents tail events.log over ssh, §9.2). */
+  feedHook(sessionId: string, event: HookEvent): void;
   unregister(sessionId: string): void;
   status(sessionId: string): SessionStatus;
   onChange(cb: (e: { sessionId: string; status: SessionStatus }) => void): () => void;
@@ -196,6 +198,12 @@ export function createStatusTracker(opts: StatusTrackerOptions): StatusTracker {
       const entry = entries.get(sessionId);
       if (!entry) return;
       entry.machine.onExit(now(), status);
+      reconcile(sessionId, entry);
+    },
+    feedHook(sessionId, event) {
+      const entry = entries.get(sessionId);
+      if (!entry) return;
+      entry.machine.onHook(now(), event);
       reconcile(sessionId, entry);
     },
     unregister(sessionId) {

@@ -8,13 +8,15 @@ exception, the embedded OpenRouter runtime). It is the shift supervisor and the 
 belt; the machines are the agent CLIs (`claude`, `codex`, `copilot`, and a built-in
 `openrouter` runtime).
 
-> **Status: nearly complete.** Built from a complete design description. **Milestones 1-9 are
-> implemented** — daemon + SQLite + UDS framing + PTY + attach; the status machine + live dashboard; the
-> spawn sequence; remote/devbox agents; the work-item monitor + focus view; nudge delivery; autonomy;
-> alerts + accounting; and **box federation** (manifest + freshness inversion, roster join, report
-> staleness, box tmux-nudge, worktree reaper). GitHub, ssh/tmux, systemd, and the LLM-narrator/Slack I/O
-> are validated only against a real repo/devbox. The only remaining milestone is the optional in-process
-> **OpenRouter runtime** (§16). See [`BUILD.md`](./BUILD.md) for the plan.
+> **Status: all 10 milestones implemented.** Built from a complete design description; the full build
+> order (§23) is complete — daemon + SQLite + UDS framing + PTY + attach; the status machine + live
+> dashboard; the spawn sequence; remote/devbox agents; the work-item monitor + focus view; nudge
+> delivery; autonomy; alerts + accounting; box federation; and the in-process OpenRouter agent runtime
+> (tools, compaction, kernel sandbox, MCP curation, the tool-calling loop). **~230 tests pass under
+> `bun test`.** The remaining work is live validation: all external I/O (GitHub `gh`, ssh/tmux, systemd,
+> the LLM narrator + Slack, the chat-completions API, kernel sandboxing) is exercised through pure,
+> tested command builders / decision logic, but has not been run against a real repo/devbox/API. See
+> [`BUILD.md`](./BUILD.md) for what's live-only per milestone.
 
 ---
 

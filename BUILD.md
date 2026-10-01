@@ -98,6 +98,28 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
 live validation against a real repo/devbox/Slack and the box daemon process shell — see the "not
 validated here" notes above and in each PR.
 
+## Live validation (run against real tools on macOS: bun, gh, git, claude 2.1.285)
+
+Exercised the never-run external-I/O paths and fixed what broke:
+
+- **GitHub (M5)** — `fetchPr` + `deriveStates` against real PRs: the GraphQL query, the aliased
+  `statusCheckRollup` folding, and CI derivation all work (verified `MERGED`/head sha on this repo, and
+  `ciState: failure` with the real failed check name on a CI-heavy public PR).
+- **claude spawn (M1-M3)** — spawning a real claude agent through the daemon: PTY + per-CLI argv + the
+  status machine + the **full hook pipeline** (claude `--settings` hooks → `hook-notify.ts` → events.log →
+  tracker → `done`). Confirmed working→done with the agent's reply, and the same **in a real worktree**
+  provisioned off `origin/main` and torn down cleanly.
+- **work-item monitor (M5)** — `workitem.add` of a real PR through the daemon derives it fully.
+
+Fixes found this way (both covered by tests):
+1. **claude workspace-trust gate** stalled every spawn before the seed — claude 2.x keys trust by the
+   cwd's realpath in `~/.claude.json`. Added `ensureClaudeTrust` to pre-accept it on claude spawns.
+2. **tracked work items were never refreshed by number** — `pollSession` only fetched branch-linked PRs,
+   so a manually-attached PR stayed `null`. Added design §12.2 step 5 (refresh every tracked PR by number).
+
+Still needs a real devbox / Slack / OpenRouter to validate: the ssh+tmux spawn + box daemon + federation
+(M4/M9), the Slack narrator (M8), the chat-completions POST + MCP stdio (M10).
+
 ## Design principles (copy these)
 
 1. Split **identity** (no defaults, fail loudly) from **preferences** (always defaulted,

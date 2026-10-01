@@ -342,7 +342,11 @@ export async function main(): Promise<void> {
     for (;;) {
       const action = await runDashboard(client);
       if (action.type === "quit") break;
-      if (action.type === "attach") await attachSession(client, action.sessionId);
+      if (action.type === "attach") {
+        await Bun.sleep(20); // let Ink finish restoring the terminal before attach takes raw stdin
+        await attachSession(client, action.sessionId);
+        await Bun.sleep(20); // let attach's terminal reset settle before Ink re-renders
+      }
     }
   } finally {
     offOpenUrl();

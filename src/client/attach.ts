@@ -18,6 +18,38 @@ export const DETACH_CHORD_MS = 800;
 const CTRL_B = 0x02;
 const ESC = "\x1b";
 
+export interface ChordHandlers {
+  onDetach(): void;
+  onForward(bytes: Uint8Array): void;
+}
+
+/**
+ * Double-Ctrl-B detach chord (design §8.4). Pure + testable. Detaches on two Ctrl-B within the window —
+ * whether they arrive as two reads or coalesced into one chunk. A lone Ctrl-B is swallowed as the prefix
+ * (delivered to nothing); a prefix followed by another key forwards the key (the prefix is dropped).
+ */
+export function createDetachChord(h: ChordHandlers, windowMs = DETACH_CHORD_MS) {
+  let pending = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clear = () => { if (timer) { clearTimeout(timer); timer = null; } pending = false; };
+  const isAllCtrlB = (b: Uint8Array) => b.length > 0 && b.every((x) => x === CTRL_B);
+  return {
+    feed(chunk: Uint8Array): void {
+      // Two (or more) Ctrl-B coalesced into one read -> detach.
+      if (chunk.length >= 2 && isAllCtrlB(chunk)) { clear(); h.onDetach(); return; }
+      if (chunk.length === 1 && chunk[0] === CTRL_B) {
+        if (pending) { clear(); h.onDetach(); return; } // second within the window
+        pending = true;
+        timer = setTimeout(clear, windowMs);
+        return; // swallow a lone prefix
+      }
+      if (pending) clear(); // prefix + other key -> drop the swallowed prefix, forward the rest
+      h.onForward(chunk);
+    },
+    dispose(): void { if (timer) clearTimeout(timer); },
+  };
+}
+
 /** Emit the unconditional terminal-mode reset sequence to a TTY (design §8.5). No-op on non-TTY. */
 export function terminalReset(out: NodeJS.WriteStream = process.stdout): void {
   if (!out.isTTY) return;
@@ -63,38 +95,26 @@ export async function attachSession(
     if (sid === sessionId) stdout.write(bytes);
   });
 
-  // Detach chord state.
-  let prefixPending = false;
-  let prefixTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const onStdin = (chunk: Buffer) => {
-    if (chunk.length === 1 && chunk[0] === CTRL_B) {
-      if (prefixPending) { // second Ctrl-B within the window -> detach
-        if (prefixTimer) clearTimeout(prefixTimer);
-        void detach();
-        return;
-      }
-      prefixPending = true;
-      prefixTimer = setTimeout(() => { prefixPending = false; prefixTimer = null; }, DETACH_CHORD_MS);
-      return; // swallow a lone prefix
-    }
-    if (prefixPending) { // prefix followed by another key -> not a detach; deliver the key only
-      prefixPending = false;
-      if (prefixTimer) { clearTimeout(prefixTimer); prefixTimer = null; }
-    }
-    client.sendInput(sessionId, new Uint8Array(chunk));
-  };
+  const chord = createDetachChord({
+    onDetach: () => void detach(),
+    onForward: (bytes) => client.sendInput(sessionId, bytes),
+  });
+  const onStdin = (chunk: Buffer) => chord.feed(new Uint8Array(chunk));
 
   const onResize = () => {
     client.sendResize(sessionId, stdout.columns ?? 80, stdout.rows ?? 24);
   };
 
+  let rawReassert: ReturnType<typeof setTimeout> | null = null;
+  const enableRaw = () => { if (stdin.isTTY) { try { stdin.setRawMode(true); } catch { /* not a tty */ } } };
+
   const cleanup = () => {
     unsubOutput();
     stdin.removeListener("data", onStdin);
     process.removeListener("SIGWINCH", onResize);
-    if (prefixTimer) clearTimeout(prefixTimer);
-    if (stdin.isTTY) stdin.setRawMode(false);
+    if (rawReassert) clearTimeout(rawReassert);
+    chord.dispose();
+    if (stdin.isTTY) { try { stdin.setRawMode(false); } catch { /* ignore */ } }
     stdin.pause();
     terminalReset(stdout);
     clearScreen(stdout);
@@ -111,10 +131,14 @@ export async function attachSession(
 
   await client.request("session.attach", { sessionId, cols, rows });
 
-  if (stdin.isTTY) stdin.setRawMode(true);
+  // Raw mode + flowing, ref'd so stdin wakes the loop (design §8.4). Re-assert once after a tick in case
+  // the caller (Ink) restored cooked mode during its own teardown AFTER we enabled it — the handoff race.
+  enableRaw();
+  (stdin as unknown as { ref?: () => void }).ref?.();
   stdin.resume();
   stdin.on("data", onStdin);
   process.on("SIGWINCH", onResize);
+  rawReassert = setTimeout(enableRaw, 50);
 
   return finished;
 }

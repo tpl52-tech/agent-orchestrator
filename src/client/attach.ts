@@ -16,6 +16,7 @@ import { paths } from "../shared/paths.ts";
 
 export const DETACH_CHORD_MS = 800;
 const CTRL_B = 0x02;
+const CTRL_RBRACKET = 0x1d; // Ctrl-] — single-key detach (classic telnet/ssh escape; tmux leaves it alone)
 const ESC = "\x1b";
 
 export interface ChordHandlers {
@@ -24,9 +25,12 @@ export interface ChordHandlers {
 }
 
 /**
- * Double-Ctrl-B detach chord (design §8.4). Pure + testable. Detaches on two Ctrl-B within the window —
- * whether they arrive as two reads or coalesced into one chunk. A lone Ctrl-B is swallowed as the prefix
- * (delivered to nothing); a prefix followed by another key forwards the key (the prefix is dropped).
+ * Detach triggers (design §8.4):
+ *   - Ctrl-] (single press) — the simple, always-available escape; survives running inside tmux/screen,
+ *     which capture Ctrl-B as their own prefix.
+ *   - double Ctrl-B within the window — whether delivered as two reads or coalesced into one chunk.
+ * A lone Ctrl-B is swallowed as the prefix; a prefix followed by another key forwards that key.
+ * Pure + testable.
  */
 export function createDetachChord(h: ChordHandlers, windowMs = DETACH_CHORD_MS) {
   let pending = false;
@@ -35,6 +39,8 @@ export function createDetachChord(h: ChordHandlers, windowMs = DETACH_CHORD_MS) 
   const isAllCtrlB = (b: Uint8Array) => b.length > 0 && b.every((x) => x === CTRL_B);
   return {
     feed(chunk: Uint8Array): void {
+      // Ctrl-] alone -> detach (simple, tmux-proof).
+      if (chunk.length === 1 && chunk[0] === CTRL_RBRACKET) { clear(); h.onDetach(); return; }
       // Two (or more) Ctrl-B coalesced into one read -> detach.
       if (chunk.length >= 2 && isAllCtrlB(chunk)) { clear(); h.onDetach(); return; }
       if (chunk.length === 1 && chunk[0] === CTRL_B) {

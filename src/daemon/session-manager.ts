@@ -11,7 +11,9 @@
  * provisioning, codex rollout discovery (step 11), the remote nudge/seed hop (step 6).
  */
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { spawnPty, type PtySession, type PtyExit } from "./pty.ts";
 import { Store } from "./store.ts";
 import type { StatusTracker } from "./monitors/status.ts";
@@ -190,6 +192,9 @@ export function createSessionManager(
       argv = params.command;
       env = { AO_SESSION_ID: session.id, AO_SESSION_DIR: sessionDir(session.id, home) };
     } else {
+      // Pre-accept claude's per-folder trust dialog, else the agent stalls at it before processing the
+      // seed (found in live validation; claude 2.x keys trust by the cwd's realpath in ~/.claude.json).
+      if (c.tool === "claude") ensureClaudeTrust(session.cwd);
       spec = buildSpawnSpec({
         tool: c.tool, sessionId: session.id, cwd: session.cwd, model: c.model, effort: c.effort,
         permissions: c.permissions, isResume: false, resumeHandle: c.resumeHandle, seed: c.seed,
@@ -310,6 +315,23 @@ export function createSessionManager(
 
 function sizeOf(p: SpawnParams): { cols: number; rows: number } | undefined {
   return p.cols && p.rows ? { cols: p.cols, rows: p.rows } : undefined;
+}
+
+/**
+ * Pre-accept claude's workspace-trust dialog for a cwd (design §7, live-validation fix). claude 2.x keys
+ * trust by the folder's REALPATH in ~/.claude.json under projects[path].hasTrustDialogAccepted; without
+ * it a spawned agent stalls on the trust menu before reading its seed. Read-modify-write preserves the
+ * rest of the file; best-effort (a trust prompt is recoverable, a corrupted ~/.claude.json is not).
+ */
+export function ensureClaudeTrust(cwd: string, homeDir: string = homedir()): void {
+  const file = join(homeDir, ".claude.json");
+  let json: Record<string, any> = {};
+  try { json = JSON.parse(readFileSync(file, "utf8")); } catch { /* missing/!readable -> start fresh */ }
+  let key = cwd;
+  try { key = realpathSync(cwd); } catch { /* dir may not be realpath-able; use as-is */ }
+  json.projects = json.projects ?? {};
+  json.projects[key] = { ...(json.projects[key] ?? {}), hasTrustDialogAccepted: true };
+  try { writeFileSync(file, JSON.stringify(json, null, 2)); } catch { /* best-effort */ }
 }
 
 function mintResumeHandle(tool: Tool): string | null {

@@ -101,28 +101,36 @@ export function startWorkItemMonitor(deps: WorkItemMonitorDeps): WorkItemMonitor
     const repo = profile.repo || config.repo;
     if (!repo) return; // no repo -> no PR monitoring
 
-    // Observe the branch (local only in M5; devbox branch-over-ssh is a follow-up).
+    const derive = deriveConfigFor(profile);
+    let changed = false;
+    const fetched = new Set<number>(); // avoid double-fetching a PR seen via both branch + tracked
+
+    const fetchInto = async (number: number): Promise<void> => {
+      if (fetched.has(number)) return;
+      fetched.add(number);
+      try {
+        const d = deriveStates(await fetchPr(repo, number), derive);
+        store.upsertWorkItem({ sessionId, kind: "pr", externalKey: `${repo}#${number}`, repo, number, ...d });
+        changed = true;
+      } catch { /* keep last-known state on a lookup failure (§12.3) */ }
+    };
+
+    // (1) Observe the branch and link its PRs (local only in M5; devbox branch-over-ssh is a follow-up).
     let branch = session.worktreeBranch;
     if (session.location === "local") branch = currentBranch(session.cwd) ?? branch;
-    let changed = false;
-
     if (branch) {
       let prs: BranchPr[] = [];
       try { prs = await listPrsForBranch(repo, branch); } catch { prs = []; } // failure != "no PRs" for tracked items
-      const derive = deriveConfigFor(profile);
-      for (const pr of prs) {
-        try {
-          const raw = await fetchPr(repo, pr.number);
-          const d = deriveStates(raw, derive);
-          store.upsertWorkItem({
-            sessionId, kind: "pr", externalKey: `${repo}#${pr.number}`, repo, number: pr.number, ...d,
-          });
-          changed = true;
-        } catch { /* keep last-known state on a lookup failure (§12.3) */ }
-      }
+      for (const pr of prs) await fetchInto(pr.number);
     }
 
-    // Refresh + retire every tracked item for this session.
+    // (5) Refresh every other tracked PR by number (design §12.2) — this is how a manually-attached PR,
+    // or an auto-linked one whose branch is unchanged, keeps its derived state fresh.
+    for (const item of store.listWorkItemsBySession(sessionId)) {
+      if (item.kind === "pr" && item.number != null) await fetchInto(item.number);
+    }
+
+    // Retire merged/closed items after the grace (re-read for the fresh pr_state).
     const now = Date.now();
     for (const item of store.listWorkItemsBySession(sessionId)) {
       const next = retirementDecision(item, now);

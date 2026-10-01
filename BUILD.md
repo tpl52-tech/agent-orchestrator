@@ -84,8 +84,19 @@ Check items off as they land. Every stub file cites the design section (`§N`) i
       `src/daemon/worktree.ts`, `src/cli/monitor.ts`, `deploy/{systemd,box}/*`. Deferred / live-only: the
       headless box daemon process itself (`box/index.ts`), the reaper's dirty/docker vetoes, and the deploy
       + systemd + credential-seeding ssh execution — all need a real devbox.
-- [ ] **10. OpenRouter runtime (optional).** Agent loop with kernel sandbox, compaction, MCP
-      host, credential seeding. — `src/daemon/openrouter/*`.
+- [x] **10. OpenRouter runtime (optional).** The tool-calling agent loop (step ceiling, seedless-waits,
+      serial tool dispatch, cache-stable system prompt), the built-in tools (read_file with the read-on
+      footer / write_file / edit_file unique-match / bash with exit code), the compaction planner (keep-2-
+      head + byte-budgeted tail snapped off tool-result boundaries), the kernel sandbox argv (seatbelt /
+      bubblewrap per policy), and the MCP curation + verb-gating. — `src/daemon/openrouter/*`. Covered by
+      `bun test` (tools against a temp dir, compaction plan, sandbox builders per platform, MCP curation,
+      and the loop driven end-to-end by a fake model). Live-only: the chat-completions POST (provider
+      pinning, non-streaming), the MCP stdio client, the kernel-sandbox exec, PTY rendering, approvals, and
+      credential seeding.
+
+**The full build order (design §23) is complete.** Every subsystem is implemented; what remains is
+live validation against a real repo/devbox/Slack and the box daemon process shell — see the "not
+validated here" notes above and in each PR.
 
 ## Design principles (copy these)
 

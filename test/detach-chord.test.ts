@@ -13,6 +13,14 @@ function harness() {
 }
 
 describe("detach chord (design §8.4)", () => {
+  test("Ctrl-] (single press) -> detach", () => {
+    const h = harness();
+    h.chord.feed(new Uint8Array([0x1d]));
+    expect(h.detached()).toBe(1);
+    expect(h.forwarded).toEqual([]);
+    h.chord.dispose();
+  });
+
   test("two separate Ctrl-B reads -> detach", () => {
     const h = harness();
     h.chord.feed(new Uint8Array([CTRL_B]));

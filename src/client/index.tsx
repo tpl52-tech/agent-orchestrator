@@ -33,6 +33,7 @@ type Row =
 function buildRows(snap: Snapshot): Row[] {
   const rows: Row[] = [];
   for (const task of snap.tasks) {
+    if (task.status === "closed") continue; // closing a task removes it from the list (x = close/archive)
     const sessions = snap.sessions.filter((x) => x.taskId === task.id);
     rows.push({ kind: "task", task, rollup: taskRollupStatus(sessions.map((s) => s.status)) });
     for (const s of sessions) {

@@ -177,6 +177,11 @@ export async function attachSession(
   process.on("SIGWINCH", onResize);
   rawReassert = setTimeout(enableRaw, 50);
 
+  // Snap the session's PTY to this terminal's size. A live session keeps its 80x24 spawn geometry, so
+  // without this the agent renders in a small box until the next window change. Sending the resize from
+  // the client means it works against an already-running daemon too (no daemon restart needed). (§8.4)
+  onResize();
+
   return finished;
 }
 

@@ -282,6 +282,7 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
         client.request("session.spawn", {
           taskId: task.id, tool: "claude", location: "local", cwd: process.cwd(),
           model: "auto", permissions: "full-access", usesWorktree: false,
+          cols: process.stdout.columns, rows: process.stdout.rows, // start at the real terminal size
         }).then(refresh).catch((e) => setError(String(e)));
       }
       return;

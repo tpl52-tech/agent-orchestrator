@@ -19,7 +19,7 @@ import type {
   WorkItem, WorkItemKind, WorkItemLifecycle, WorkItemSource,
   AutonomyAction, AutonomyDecision, AutonomyStatus,
   Alert, AlertKind, AlertSeverity,
-  SweepJob, SweepEvent, SweepKind, SweepState, SweepEventKind,
+  SweepJob, SweepEvent, SweepKind, SweepState, SweepEventKind, LinearIssue,
 } from "../shared/types.ts";
 
 export const PRAGMAS = ["PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON"];
@@ -326,6 +326,16 @@ export type SessionPatch = Partial<Pick<Session,
  * these; the Mac reads the box DB only through a one-shot read-only process. Methods are added per
  * build step — Milestone 1 covers tasks and sessions.
  */
+function rowToLinearIssue(r: Row): LinearIssue {
+  return {
+    id: r.id, identifier: r.identifier, title: r.title ?? "",
+    stateName: r.state_name ?? null, stateType: r.state_type ?? null, assignee: r.assignee ?? null,
+    projectId: r.project_id ?? null, teamKey: r.team_key ?? null, url: r.url ?? null,
+    priority: r.priority ?? null, blockedBy: r.blocked_by ? JSON.parse(r.blocked_by) : [],
+    updatedAt: r.updated_at ?? null,
+  };
+}
+
 function rowToSweepJob(r: Row): SweepJob {
   return {
     id: r.id, kind: r.kind as SweepKind, ticketId: r.ticket_id, ticketKey: r.ticket_key,
@@ -784,6 +794,53 @@ export class Store {
 
   listSweepEvents(jobId: string): SweepEvent[] {
     return (this.db.query("SELECT * FROM sweep_event WHERE job_id = ? ORDER BY at ASC, id ASC").all(jobId) as Row[]).map(rowToSweepEvent);
+  }
+
+  // ---- Linear issue sync + in-review enqueue (first live slice, PRD §4) ----
+
+  upsertLinearIssue(i: {
+    id: string; identifier: string; title?: string;
+    stateName?: string | null; stateType?: string | null; assignee?: string | null;
+    projectId?: string | null; teamKey?: string | null; url?: string | null;
+    priority?: number | null; blockedBy?: string[]; updatedAt?: number | null;
+  }): void {
+    this.db.run(
+      `INSERT INTO linear_issues (id, identifier, project_id, team_key, title, url, state_name, state_type, assignee, priority, blocked_by, updated_at, synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         identifier = excluded.identifier, project_id = excluded.project_id, team_key = excluded.team_key,
+         title = excluded.title, url = excluded.url, state_name = excluded.state_name,
+         state_type = excluded.state_type, assignee = excluded.assignee, priority = excluded.priority,
+         blocked_by = excluded.blocked_by, updated_at = excluded.updated_at, synced_at = excluded.synced_at`,
+      [i.id, i.identifier, i.projectId ?? null, i.teamKey ?? null, i.title ?? "", i.url ?? null,
+       i.stateName ?? null, i.stateType ?? null, i.assignee ?? null, i.priority ?? null,
+       JSON.stringify(i.blockedBy ?? []), i.updatedAt ?? null, Date.now()],
+    );
+  }
+
+  listLinearIssues(stateName?: string): LinearIssue[] {
+    const sql = `SELECT * FROM linear_issues ${stateName ? "WHERE state_name = ?" : ""} ORDER BY sort_order ASC, identifier ASC`;
+    const rows = (stateName ? this.db.query(sql).all(stateName) : this.db.query(sql).all()) as Row[];
+    return rows.map(rowToLinearIssue);
+  }
+
+  /**
+   * Enqueue an in-review sweep job for every Linear issue in `stateName` that does not
+   * already have an active in-review job. The first live slice: linear_issues -> sweep_job.
+   * Idempotent — safe to run on every sweep trigger. Returns the jobs it created.
+   */
+  enqueueInReviewSweeps(stateName = "In Review"): SweepJob[] {
+    const created: SweepJob[] = [];
+    for (const iss of this.listLinearIssues(stateName)) {
+      const active = this.db.query(
+        `SELECT 1 FROM sweep_job WHERE kind = 'in_review' AND ticket_id = ? AND state NOT IN ('merged', 'failed') LIMIT 1`,
+      ).get(iss.id);
+      if (active) continue;
+      created.push(this.createSweepJob({
+        kind: "in_review", ticketId: iss.id, ticketKey: iss.identifier, assignee: iss.assignee,
+      }));
+    }
+    return created;
   }
 }
 

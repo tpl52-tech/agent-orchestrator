@@ -297,3 +297,19 @@ export interface SweepEvent {
   event: SweepEventKind;
   detail: unknown | null;
 }
+
+/** A Linear issue synced into the orchestrator (feeds the in-review sweep). */
+export interface LinearIssue {
+  id: string;
+  identifier: string;        // e.g. COR-42
+  title: string;
+  stateName: string | null;  // e.g. "In Review"
+  stateType: string | null;  // e.g. "started"
+  assignee: string | null;   // Linear user id
+  projectId: string | null;
+  teamKey: string | null;
+  url: string | null;
+  priority: number | null;
+  blockedBy: string[];       // issue ids this one is blocked by
+  updatedAt: number | null;
+}

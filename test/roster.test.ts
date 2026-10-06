@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
-  ROSTER, memberByLinearId, memberByGithub, slackLookupEmails,
+  ROSTER, buildRosterIndexes, memberByLinearId, memberByGithub, slackLookupEmails,
 } from "../src/shared/roster.ts";
 
 const DANA_ER559 = "21964707-6acc-493e-80d5-af0a402af210";
@@ -44,5 +44,15 @@ describe("roster (lead-console PRD §5)", () => {
       "er559@cornell.edu",
       "dana.ryu2007@gmail.com",
     ]);
+  });
+
+  test("buildRosterIndexes builds the real roster without throwing", () => {
+    expect(() => buildRosterIndexes(ROSTER)).not.toThrow();
+  });
+
+  test("buildRosterIndexes throws loud on a duplicate linearId or github", () => {
+    const base = ROSTER[0]!;
+    expect(() => buildRosterIndexes([base, { ...base, github: "other" }])).toThrow(/duplicate linearId/);
+    expect(() => buildRosterIndexes([base, { ...base, linearIds: ["x"] }])).toThrow(/duplicate github/);
   });
 });

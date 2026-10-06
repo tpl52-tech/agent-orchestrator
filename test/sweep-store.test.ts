@@ -41,4 +41,13 @@ describe("sweep_job store (lead-console PRD §4-§5)", () => {
     s.transitionSweepJob(a.id, { state: "merged" });
     expect(() => s.createSweepJob({ kind: "rescue", ticketId: "t1", ticketKey: "COR-9" })).not.toThrow();
   });
+
+  test("in-review idempotency: one job per (ticket, head)", () => {
+    const s = new Store(":memory:");
+    s.createSweepJob({ kind: "in_review", ticketId: "t", ticketKey: "COR-7", headSha: "abc123" });
+    // same ticket + same head is rejected by the partial unique index
+    expect(() => s.createSweepJob({ kind: "in_review", ticketId: "t", ticketKey: "COR-7", headSha: "abc123" })).toThrow();
+    // a new commit (new head) is a new job
+    expect(() => s.createSweepJob({ kind: "in_review", ticketId: "t", ticketKey: "COR-7", headSha: "def456" })).not.toThrow();
+  });
 });

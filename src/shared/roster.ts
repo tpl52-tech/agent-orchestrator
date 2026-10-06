@@ -40,12 +40,29 @@ export const ROSTER: Member[] = [
   { name: "Dana Ryu", netid: "er559", emails: ["er559@cornell.edu", "dana.ryu2007@gmail.com"], linearIds: ["21964707-6acc-493e-80d5-af0a402af210", "411f7c8b-01d3-45ba-b152-ce4588f55045"], github: "danaryu2007-oss" },
 ];
 
-const byLinearId = new Map<string, Member>();
-const byGithub = new Map<string, Member>();
-for (const m of ROSTER) {
-  for (const id of m.linearIds) byLinearId.set(id, m);
-  byGithub.set(m.github.toLowerCase(), m);
+/**
+ * Build the id/login lookup indexes, failing loud on a duplicate (the roster is the
+ * identity source — a silent overwrite would misroute a Slack DM or a sweep).
+ */
+export function buildRosterIndexes(members: Member[]): {
+  byLinearId: Map<string, Member>;
+  byGithub: Map<string, Member>;
+} {
+  const byLinearId = new Map<string, Member>();
+  const byGithub = new Map<string, Member>();
+  for (const m of members) {
+    const gh = m.github.toLowerCase();
+    if (byGithub.has(gh)) throw new Error(`roster: duplicate github "${m.github}" (${m.name})`);
+    byGithub.set(gh, m);
+    for (const id of m.linearIds) {
+      if (byLinearId.has(id)) throw new Error(`roster: duplicate linearId "${id}" (${m.name})`);
+      byLinearId.set(id, m);
+    }
+  }
+  return { byLinearId, byGithub };
 }
+
+const { byLinearId, byGithub } = buildRosterIndexes(ROSTER);
 
 /** Member for a Linear user id — both of Dana Ryu's ids resolve to the same one. */
 export function memberByLinearId(linearId: string): Member | undefined {

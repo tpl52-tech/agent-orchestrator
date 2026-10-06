@@ -47,6 +47,25 @@ function buildRows(snap: Snapshot): Row[] {
 
 const EMPTY: Snapshot = { tasks: [], sessions: [], workItems: [] };
 
+// Raw arrow escape sequences — matched directly because Ink's parser under Bun doesn't always turn
+// them into key.upArrow/key.downArrow (they can arrive as the whole seq, ESC-stripped, or app-cursor mode).
+const UP_KEYS = new Set(["[A", "OA", "[A", "OA"]);
+const DOWN_KEYS = new Set(["[B", "OB", "[B", "OB"]);
+
+/**
+ * List-navigation direction from an Ink key event. Accepts Ink's parsed arrow flags, vim j/k, and —
+ * for robustness under Bun, where Ink sometimes fails to turn arrows into key.upArrow/downArrow — the
+ * raw escape sequences themselves (whole, ESC-stripped, or application-cursor mode). Pure + testable.
+ */
+export function navDirection(
+  input: string,
+  key: { upArrow?: boolean; downArrow?: boolean },
+): "up" | "down" | null {
+  if (key.upArrow || input === "k" || UP_KEYS.has(input)) return "up";
+  if (key.downArrow || input === "j" || DOWN_KEYS.has(input)) return "down";
+  return null;
+}
+
 const CODEX_GLYPH: Record<CodexReviewState, string> = {
   approved: "✓", reviewed: "◐", requested: "…", none: "—",
 };
@@ -238,8 +257,9 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
     if (input === "A") { setActivityOpen((v) => !v); return; }
     if (input === "E") { client.request("autonomy.extend", { hours: 2 }).then(refresh).catch(() => {}); return; }
     if (focusOpen || activityOpen) return; // overlays are read-only
-    if (key.upArrow || input === "k") { setCursor((c) => Math.max(0, c - 1)); return; }
-    if (key.downArrow || input === "j") { setCursor((c) => Math.min(rows.length - 1, c + 1)); return; }
+    const nav = navDirection(input, key);
+    if (nav === "up") { setCursor((c) => Math.max(0, c - 1)); return; }
+    if (nav === "down") { setCursor((c) => Math.min(rows.length - 1, c + 1)); return; }
     if (input === "r") { void refresh(); return; }
     if (input === "n") { setMode("newTask"); return; }
 

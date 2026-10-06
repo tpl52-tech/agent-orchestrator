@@ -24,6 +24,19 @@ export interface ChordHandlers {
   onForward(bytes: Uint8Array): void;
 }
 
+const INPUT_ENCODER = new TextEncoder();
+
+/**
+ * Normalize a stdin 'data' chunk to raw bytes. Ink leaves process.stdin in 'utf8' mode (it calls
+ * setEncoding('utf8') on mount and never resets it), so once we switch stdin to flowing the 'data'
+ * event delivers STRINGS, not Buffers — and `new Uint8Array(someString)` yields all-zero bytes, so
+ * every keystroke would reach the agent as NUL ("can't type"). Encode strings as UTF-8; still accept
+ * Buffers/Uint8Arrays in case the encoding was ever reset. (design §8.4)
+ */
+export function toInputBytes(chunk: string | Uint8Array): Uint8Array {
+  return typeof chunk === "string" ? INPUT_ENCODER.encode(chunk) : new Uint8Array(chunk);
+}
+
 /**
  * Detach triggers (design §8.4):
  *   - Ctrl-] (single press) — the simple, always-available escape; survives running inside tmux/screen,
@@ -105,7 +118,7 @@ export async function attachSession(
     onDetach: () => void detach(),
     onForward: (bytes) => client.sendInput(sessionId, bytes),
   });
-  const onStdin = (chunk: Buffer) => chord.feed(new Uint8Array(chunk));
+  const onStdin = (chunk: Buffer | string) => chord.feed(toInputBytes(chunk));
 
   const onResize = () => {
     client.sendResize(sessionId, stdout.columns ?? 80, stdout.rows ?? 24);

@@ -263,6 +263,14 @@ function Dashboard({ client, onAction }: { client: DaemonClient; onAction: (a: A
     if (input === "r") { void refresh(); return; }
     if (input === "n") { setMode("newTask"); return; }
 
+    if (current?.kind === "task") {
+      if (input === "x") {
+        const closing = current.task.status !== "closed";
+        client.request(closing ? "task.close" : "task.reopen", { id: current.task.id }).then(refresh).catch((e) => setError(String(e)));
+        return;
+      }
+    }
+
     if (current?.kind === "workitem") {
       if (key.return && current.item.url) { openUrl(current.item.url); return; }
       if (input === "x") { client.request("workitem.remove", { id: current.item.id }).then(refresh).catch(() => {}); return; }

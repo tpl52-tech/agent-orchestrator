@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { createDetachChord } from "../src/client/attach.ts";
+import { createDetachChord, toInputBytes } from "../src/client/attach.ts";
 
 const CTRL_B = 0x02;
 function harness() {
@@ -52,6 +52,21 @@ describe("detach chord (design §8.4)", () => {
     expect(h.detached()).toBe(0);
     expect(h.forwarded).toEqual(["x"]);           // the dropped prefix is not forwarded
     h.chord.dispose();
+  });
+
+  test("toInputBytes: a utf8 string chunk (Ink's mode) becomes its real bytes, not NUL", () => {
+    // The bug: Ink leaves stdin in utf8 mode, so 'data' yields strings; new Uint8Array("a") was [0].
+    expect([...toInputBytes("a")]).toEqual([0x61]);
+    expect([...toInputBytes("hello")]).toEqual([...new TextEncoder().encode("hello")]);
+    expect([...toInputBytes("\r")]).toEqual([0x0d]); // Enter
+    expect([...toInputBytes("\x7f")]).toEqual([0x7f]); // backspace
+    expect([...toInputBytes("\x1b[A")]).toEqual([0x1b, 0x5b, 0x41]); // up arrow
+    expect([...toInputBytes("\x02")]).toEqual([0x02]); // Ctrl-B still detects as the chord prefix
+  });
+
+  test("toInputBytes: a Buffer/Uint8Array chunk passes through verbatim", () => {
+    expect([...toInputBytes(new Uint8Array([0x1d]))]).toEqual([0x1d]);
+    expect([...toInputBytes(Buffer.from([1, 2, 3]))]).toEqual([1, 2, 3]);
   });
 
   test("prefix expires after the window (no detach on a later lone Ctrl-B)", async () => {

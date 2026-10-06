@@ -114,7 +114,21 @@ export async function attachSession(
   let rawReassert: ReturnType<typeof setTimeout> | null = null;
   const enableRaw = () => { if (stdin.isTTY) { try { stdin.setRawMode(true); } catch { /* not a tty */ } } };
 
+  // The agent process ending while we're attached — a resume that finds no conversation, a crash, or just
+  // the agent exiting — must hand control back to the dashboard. Without this the terminal is stranded in
+  // raw mode, attached to a corpse, with keystrokes forwarded into the void (design §8.4).
+  const offExit = client.on((ev) => {
+    if (ev.type === "session.exit" && (ev.data as { sessionId?: string } | undefined)?.sessionId === sessionId) {
+      cleanup();
+      done();
+    }
+  });
+
+  let ended = false;
   const cleanup = () => {
+    if (ended) return; // idempotent: session-exit, detach, and connection-close can all race here
+    ended = true;
+    offExit();
     unsubOutput();
     stdin.removeListener("data", onStdin);
     process.removeListener("SIGWINCH", onResize);
@@ -136,6 +150,10 @@ export async function attachSession(
   void client.closed.then(() => { cleanup(); done(); });
 
   await client.request("session.attach", { sessionId, cols, rows });
+
+  // The session may have exited during the attach round-trip (e.g. a resume that instantly fails). If so,
+  // cleanup already ran — don't re-grab the terminal, just resolve back to the dashboard.
+  if (ended) return finished;
 
   // Raw mode + flowing, ref'd so stdin wakes the loop (design §8.4). Re-assert once after a tick in case
   // the caller (Ink) restored cooked mode during its own teardown AFTER we enabled it — the handoff race.

@@ -19,6 +19,7 @@ import type {
   WorkItem, WorkItemKind, WorkItemLifecycle, WorkItemSource,
   AutonomyAction, AutonomyDecision, AutonomyStatus,
   Alert, AlertKind, AlertSeverity,
+  SweepJob, SweepEvent, SweepKind, SweepState, SweepEventKind,
 } from "../shared/types.ts";
 
 export const PRAGMAS = ["PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON"];
@@ -227,6 +228,40 @@ export const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  // --- step 1: AO Lead Console sweep jobs (lead-console PRD §4-§5) -------------
+  `
+  CREATE TABLE IF NOT EXISTS sweep_job (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,                      -- 'in_review' | 'rescue'
+    ticket_id   TEXT NOT NULL,
+    ticket_key  TEXT NOT NULL,
+    assignee    TEXT,
+    pr_number   INTEGER,
+    head_sha    TEXT,
+    state       TEXT NOT NULL DEFAULT 'queued',
+    cycles      INTEGER NOT NULL DEFAULT 0,
+    gate        TEXT,                               -- JSON { ac, ci, findings, grade }
+    reason      TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+  );
+
+  -- idempotency: in-review re-runs only on a new commit
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_sweep_review ON sweep_job(ticket_id, head_sha)
+    WHERE kind = 'in_review';
+  -- idempotency: at most ONE active rescue per ticket
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_sweep_rescue_active ON sweep_job(ticket_id)
+    WHERE kind = 'rescue' AND state NOT IN ('merged', 'failed');
+
+  CREATE TABLE IF NOT EXISTS sweep_event (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id  TEXT NOT NULL REFERENCES sweep_job(id) ON DELETE CASCADE,
+    at      INTEGER NOT NULL,
+    event   TEXT NOT NULL,
+    detail  TEXT
+  );
+  CREATE INDEX IF NOT EXISTS ix_sweep_event_job ON sweep_event(job_id, at);
+  `,
 ];
 
 /**
@@ -291,6 +326,23 @@ export type SessionPatch = Partial<Pick<Session,
  * these; the Mac reads the box DB only through a one-shot read-only process. Methods are added per
  * build step — Milestone 1 covers tasks and sessions.
  */
+function rowToSweepJob(r: Row): SweepJob {
+  return {
+    id: r.id, kind: r.kind as SweepKind, ticketId: r.ticket_id, ticketKey: r.ticket_key,
+    assignee: r.assignee ?? null, prNumber: r.pr_number ?? null, headSha: r.head_sha ?? null,
+    state: r.state as SweepState, cycles: r.cycles,
+    gate: r.gate == null ? null : JSON.parse(r.gate), reason: r.reason ?? null,
+    createdAt: r.created_at, updatedAt: r.updated_at,
+  };
+}
+
+function rowToSweepEvent(r: Row): SweepEvent {
+  return {
+    id: r.id, jobId: r.job_id, at: r.at, event: r.event as SweepEventKind,
+    detail: r.detail == null ? null : JSON.parse(r.detail),
+  };
+}
+
 export class Store {
   readonly db: Database;
 
@@ -673,6 +725,62 @@ export class Store {
       sessionId: r.session_id, model: r.model, input: r.input_tokens, output: r.output_tokens,
       costMicros: r.reported_cost_micros,
     }));
+  }
+
+  // ---- AO Lead Console sweeps (lead-console PRD §4-§5) ----
+
+  createSweepJob(p: { kind: SweepKind; ticketId: string; ticketKey: string; assignee?: string | null }): SweepJob {
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    this.db.run(
+      `INSERT INTO sweep_job (id, kind, ticket_id, ticket_key, assignee, state, cycles, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?)`,
+      [id, p.kind, p.ticketId, p.ticketKey, p.assignee ?? null, now, now],
+    );
+    return this.getSweepJob(id)!;
+  }
+
+  getSweepJob(id: string): SweepJob | null {
+    const row = this.db.query("SELECT * FROM sweep_job WHERE id = ?").get(id) as Row | null;
+    return row ? rowToSweepJob(row) : null;
+  }
+
+  listSweepJobs(filter: { kind?: SweepKind; state?: SweepState } = {}): SweepJob[] {
+    const where: string[] = [];
+    const vals: any[] = [];
+    if (filter.kind) { where.push("kind = ?"); vals.push(filter.kind); }
+    if (filter.state) { where.push("state = ?"); vals.push(filter.state); }
+    const sql = `SELECT * FROM sweep_job ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at ASC`;
+    return (this.db.query(sql).all(...vals) as Row[]).map(rowToSweepJob);
+  }
+
+  /** Patch a job's mutable fields (state, cycles, pr, head, gate, reason); bumps updated_at. */
+  transitionSweepJob(id: string, patch: {
+    state?: SweepState; cycles?: number; prNumber?: number | null;
+    headSha?: string | null; gate?: unknown; reason?: string | null;
+  }): SweepJob {
+    const sets: string[] = ["updated_at = ?"];
+    const vals: any[] = [Date.now()];
+    if (patch.state !== undefined)    { sets.push("state = ?");     vals.push(patch.state); }
+    if (patch.cycles !== undefined)   { sets.push("cycles = ?");    vals.push(patch.cycles); }
+    if (patch.prNumber !== undefined) { sets.push("pr_number = ?"); vals.push(patch.prNumber); }
+    if (patch.headSha !== undefined)  { sets.push("head_sha = ?");  vals.push(patch.headSha); }
+    if (patch.gate !== undefined)     { sets.push("gate = ?");      vals.push(patch.gate === null ? null : JSON.stringify(patch.gate)); }
+    if (patch.reason !== undefined)   { sets.push("reason = ?");    vals.push(patch.reason); }
+    this.db.run(`UPDATE sweep_job SET ${sets.join(", ")} WHERE id = ?`, [...vals, id]);
+    return this.getSweepJob(id)!;
+  }
+
+  recordSweepEvent(jobId: string, event: SweepEventKind, detail?: unknown): SweepEvent {
+    this.db.run(
+      "INSERT INTO sweep_event (job_id, at, event, detail) VALUES (?, ?, ?, ?)",
+      [jobId, Date.now(), event, detail === undefined ? null : JSON.stringify(detail)],
+    );
+    return rowToSweepEvent(this.db.query("SELECT * FROM sweep_event WHERE rowid = last_insert_rowid()").get() as Row);
+  }
+
+  listSweepEvents(jobId: string): SweepEvent[] {
+    return (this.db.query("SELECT * FROM sweep_event WHERE job_id = ? ORDER BY at ASC, id ASC").all(jobId) as Row[]).map(rowToSweepEvent);
   }
 }
 

@@ -258,3 +258,42 @@ export interface AutonomyAction {
   createdAt: EpochMs;
   attempts: number;
 }
+
+
+// --- AO Lead Console sweeps (lead-console PRD §4-§5) ---
+
+export type SweepKind = "in_review" | "rescue";
+
+export type SweepState =
+  | "queued" | "implementing" | "fixing" | "reviewing" | "ci"
+  | "ready" | "needs_human" | "merged" | "failed";
+
+/** A sweep attempt on one ticket: in-review (drive a PR) or rescue (build from scratch). */
+export interface SweepJob {
+  id: string;
+  kind: SweepKind;
+  ticketId: string;        // Linear issue id
+  ticketKey: string;       // e.g. COR-42
+  assignee: string | null;
+  prNumber: number | null;
+  headSha: string | null;  // in_review: PR head; rescue: null until a PR opens
+  state: SweepState;
+  cycles: number;          // fix/implement -> review loop; cap 8
+  gate: unknown | null;    // { ac, ci, findings, grade }
+  reason: string | null;   // why needs_human / failed
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type SweepEventKind =
+  | "state_change" | "spawn" | "gate_eval" | "pr_open"
+  | "merge" | "comment" | "slack" | "error";
+
+/** Append-only audit entry for a sweep job. */
+export interface SweepEvent {
+  id: number;
+  jobId: string;
+  at: number;
+  event: SweepEventKind;
+  detail: unknown | null;
+}

@@ -1,7 +1,7 @@
 /**
  * Shared domain layer (design §3.2). Re-exports the vocabulary used by daemon, client, and CLI:
  * domain types, wire protocol, per-CLI spawn spec, config, settings, profiles, focus
- * classification, ticket/transcript parsing, usage pricing, autonomy window, remote builders.
+ * classification, ticket/transcript parsing, usage pricing, autonomy window, remote builders, team roster.
  */
 
 export * from "./types.ts";
@@ -18,3 +18,4 @@ export * from "./transcript.ts";
 export * from "./pricing.ts";
 export * from "./autonomy-window.ts";
 export * from "./remote.ts";
+export * from "./roster.ts";

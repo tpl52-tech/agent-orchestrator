@@ -227,6 +227,10 @@ export function startUdsServer(socketPath: string, deps: UdsServerDeps): UdsServ
     conn.attachedSessionId = sessionId;
     const paint = await manager.repaintBytes(sessionId);
     if (paint.length) conn.writer.write(ptyOutputFrame(sessionId, paint));
+    // A live session keeps its spawn-time geometry — resume() returns the existing PTY and never resizes
+    // it — so without this the agent renders in its original 80x24 box. Match the attaching terminal; the
+    // resulting SIGWINCH makes the agent redraw full-size through the listener we just registered (§8.4).
+    if (size) manager.resize(sessionId, size.cols, size.rows);
     return { ok: true, attached: sessionId };
   }
 

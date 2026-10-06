@@ -729,13 +729,16 @@ export class Store {
 
   // ---- AO Lead Console sweeps (lead-console PRD §4-§5) ----
 
-  createSweepJob(p: { kind: SweepKind; ticketId: string; ticketKey: string; assignee?: string | null }): SweepJob {
+  createSweepJob(p: {
+    kind: SweepKind; ticketId: string; ticketKey: string;
+    assignee?: string | null; prNumber?: number | null; headSha?: string | null;
+  }): SweepJob {
     const now = Date.now();
     const id = crypto.randomUUID();
     this.db.run(
-      `INSERT INTO sweep_job (id, kind, ticket_id, ticket_key, assignee, state, cycles, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?)`,
-      [id, p.kind, p.ticketId, p.ticketKey, p.assignee ?? null, now, now],
+      `INSERT INTO sweep_job (id, kind, ticket_id, ticket_key, assignee, pr_number, head_sha, state, cycles, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`,
+      [id, p.kind, p.ticketId, p.ticketKey, p.assignee ?? null, p.prNumber ?? null, p.headSha ?? null, now, now],
     );
     return this.getSweepJob(id)!;
   }
